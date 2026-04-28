@@ -230,6 +230,7 @@ function pollClientStatus(tabId, onDone) {
         loadFilterOptions();   // populate dropdowns once data is ready
         loadBillingEntities();
         switchTab(tabId || 'trending');
+        if (highDollarMode) loadHDThreshold();
         if (typeof onDone === 'function') onDone();
       }
     })
