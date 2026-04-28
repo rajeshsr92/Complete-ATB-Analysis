@@ -1,0 +1,24 @@
+# Patient data — never commit
+Data/
+
+# Compiled Python libraries (installed locally, not part of source)
+lib/
+
+# Pickle caches generated at runtime
+*.pkl
+*.atb_*.pkl
+*.medicare*.pkl
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment / secrets
+.env
+*.env
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
