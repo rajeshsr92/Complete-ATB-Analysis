@@ -8,6 +8,7 @@ let bifurBarChart = null;
 let bifurDonutChart = null;
 let denialParetoChart = null;
 let denialGroupChart = null;
+let dvTrendChart = null;
 let allWeeks = [];
 let currentClient = '';
 let highDollarMode = false;
@@ -256,6 +257,7 @@ function switchTab(id) {
   if (id === 'bifurcation') loadBifurcation();
   if (id === 'contributors') loadContributors();
   if (id === 'denials') loadDenials();
+  if (id === 'denial-velocity') loadDenialVelocity();
 }
 
 function switchSection(id) {
@@ -1240,7 +1242,7 @@ function loadDenials() {
       renderDenialGroupDonut(data.by_group || []);
       renderDenialHpBars(data.by_health_plan || [], topN);
       renderDenialAgeTable(data.by_denial_age || [], data.has_date);
-      renderDenialCodeTable(data.by_code || [], data.has_reason, data.has_group);
+      renderDenialCodeTable(data.by_code || [], false, data.has_group);
       renderDenialHpTable(data.by_health_plan || [], topN);
       const lbl = document.getElementById('denials-topn-label');
       if (lbl) lbl.textContent = topN;
@@ -1296,7 +1298,10 @@ function renderDenialParetoChart(by_code) {
 
   // Show top 20 codes for readability
   const rows   = by_code.slice(0, 20);
-  const labels = rows.map(r => r.code + (r.group && r.group !== 'nan' ? ` [${r.group}]` : ''));
+  const labels = rows.map(r => {
+    const code = r.code.length > 30 ? r.code.substring(0, 30) + '…' : r.code;
+    return code + (r.group && r.group !== 'nan' && r.group !== 'Unknown' ? ` [${r.group}]` : '');
+  });
   const balances = rows.map(r => r.balance);
   const cumPcts  = rows.map(r => r.cumulative_pct);
   const refLine  = rows.map(() => 90);
@@ -1508,8 +1513,7 @@ function renderDenialCodeTable(rows, hasReason, hasGroup) {
         ${r.code}
         ${r.is_top90 ? '<span class="pareto-90-label">TOP 90%</span>' : ''}
       </td>
-      <td style="font-size:11px;color:#94a3b8">${hasReason && r.reason && r.reason !== 'nan' ? r.reason : '—'}</td>
-      <td style="font-size:11px;color:#64748b">${hasGroup && r.group && r.group !== 'nan' ? r.group : '—'}</td>
+      <td style="font-size:11px;color:#64748b">${hasGroup && r.group && r.group !== 'nan' && r.group !== 'Unknown' ? r.group : '—'}</td>
       <td>${fmtNum(r.count)}</td>
       <td>${fmtDollar(r.balance)}</td>
       <td>${r.pct_of_denied != null ? r.pct_of_denied + '%' : '—'}</td>
@@ -1520,7 +1524,7 @@ function renderDenialCodeTable(rows, hasReason, hasGroup) {
     tbody.appendChild(tr);
   });
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#64748b;padding:20px">No denial code data found.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#64748b;padding:20px">No denial code data found.</td></tr>';
   }
 }
 
@@ -1552,6 +1556,271 @@ function renderDenialHpTable(rows, topN) {
   if (!visible.length) {
     tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#64748b;padding:20px">No health plan denial data.</td></tr>';
   }
+}
+
+// ── TAB 6: DENIAL VELOCITY ───────────────────────────────────
+function loadDenialVelocity() {
+  const content   = document.getElementById('dv-content');
+  const unavail   = document.getElementById('dv-unavailable');
+  const summPanel = document.getElementById('dv-summary-panel');
+  if (content)   content.style.display = 'none';
+  if (unavail)   unavail.style.display = 'none';
+  if (summPanel) summPanel.style.display = 'none';
+
+  fetch(apiUrl('/api/denial-velocity'))
+    .then(r => r.json())
+    .then(data => {
+      if (!data || data.error) return;
+      if (!data.available) {
+        if (unavail) unavail.style.display = '';
+        return;
+      }
+      if (content) content.style.display = '';
+      renderTabSummary('dv-summary-list', data.summary_points || []);
+      renderDvKpis(data.kpis || {});
+      renderDvTrendChart(data.trend || []);
+      renderDvHeatTable(data);
+      renderDvAgedTable(data.aged_denials || [], data.has_date);
+    })
+    .catch(() => {});
+}
+
+function renderDvKpis(kpis) {
+  const setEl  = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  const setHtml = (id, v) => { const el = document.getElementById(id); if (el) el.innerHTML = v; };
+  setEl('dv-open-bal',      fmtDollar(kpis.open_denied_balance));
+  setEl('dv-open-cnt-val',  fmtNum(kpis.open_denied_count));
+  setEl('dv-avg-age',       kpis.avg_age_days != null ? kpis.avg_age_days + ' days' : '—');
+  setEl('dv-over90-bal',    fmtDollar(kpis.over_90_balance));
+  setHtml('dv-over90-pct',  kpis.pct_over_90_days != null ? kpis.pct_over_90_days + '% of denied' : '—');
+  setEl('dv-over180-bal',   fmtDollar(kpis.over_180_balance));
+  setHtml('dv-over180-pct', kpis.pct_over_180_days != null ? kpis.pct_over_180_days + '% write-off risk' : '—');
+}
+
+function renderDvTrendChart(trend) {
+  const ctx = document.getElementById('dv-trend-chart');
+  if (!ctx) return;
+  if (dvTrendChart) dvTrendChart.destroy();
+  const labels = trend.map(d => fmtWeek(d.week));
+  dvTrendChart = new Chart(ctx, {
+    data: {
+      labels,
+      datasets: [
+        {
+          type: 'bar',
+          label: 'Denied Balance ($)',
+          data: trend.map(d => d.balance),
+          backgroundColor: 'rgba(239,68,68,0.3)',
+          borderColor: '#ef4444',
+          borderWidth: 1,
+          borderRadius: 4,
+          yAxisID: 'y1',
+          order: 2,
+        },
+        {
+          type: 'line',
+          label: 'Denied Encounters',
+          data: trend.map(d => d.count),
+          borderColor: '#f59e0b',
+          backgroundColor: 'rgba(245,158,11,0.1)',
+          pointBackgroundColor: '#f59e0b',
+          pointRadius: 5,
+          tension: 0.3,
+          fill: true,
+          yAxisID: 'y2',
+          order: 1,
+        },
+        {
+          type: 'line',
+          label: '% of ATB',
+          data: trend.map(d => d.pct_of_atb || 0),
+          borderColor: '#0ea5e9',
+          backgroundColor: 'transparent',
+          pointBackgroundColor: '#0ea5e9',
+          pointRadius: 4,
+          borderDash: [4, 3],
+          tension: 0.3,
+          fill: false,
+          yAxisID: 'yPct',
+          order: 0,
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { labels: { color: '#94a3b8', font: { size: 12 } } },
+        tooltip: {
+          callbacks: {
+            label: c => {
+              if (c.dataset.yAxisID === 'y1')   return ` ${c.dataset.label}: ${fmtDollar(c.parsed.y)}`;
+              if (c.dataset.yAxisID === 'yPct') return ` ${c.dataset.label}: ${c.parsed.y}%`;
+              return ` ${c.dataset.label}: ${fmtNum(c.parsed.y)}`;
+            }
+          }
+        }
+      },
+      scales: {
+        x: { ticks: { color: '#94a3b8' }, grid: { color: 'rgba(30,58,95,0.5)' } },
+        y1: {
+          type: 'linear', position: 'left',
+          ticks: { color: '#ef4444', callback: v => fmtDollar(v) },
+          grid: { color: 'rgba(30,58,95,0.5)' }
+        },
+        y2: {
+          type: 'linear', position: 'right',
+          ticks: { color: '#f59e0b', callback: v => fmtNum(v) },
+          grid: { drawOnChartArea: false }
+        },
+        yPct: {
+          type: 'linear', position: 'right',
+          min: 0, max: 100,
+          ticks: { color: '#0ea5e9', callback: v => v + '%' },
+          grid: { drawOnChartArea: false },
+          display: false,
+        }
+      }
+    }
+  });
+}
+
+const DV_AGE_BUCKETS = ['0-29 days','30-59 days','60-89 days','90-119 days','120-179 days','180+ days'];
+
+function renderDvHeatTable(data) {
+  const wrap = document.getElementById('dv-heat-wrap');
+  if (!wrap) return;
+  const by_code  = data.by_code || [];
+  const has_date = data.has_date;
+
+  if (!by_code.length) {
+    wrap.innerHTML = '<p style="color:#64748b;padding:20px">No denial code data available for latest ATB.</p>';
+    return;
+  }
+
+  // Compute heat thresholds from all non-zero age-bucket values
+  const allVals = [];
+  by_code.forEach(r => DV_AGE_BUCKETS.forEach(b => {
+    const v = (r.age_dist && r.age_dist[b]) || 0;
+    if (v > 0) allVals.push(v);
+  }));
+  allVals.sort((a, b) => a - b);
+  const p25 = allVals[Math.floor(allVals.length * 0.25)] || 1;
+  const p75 = allVals[Math.floor(allVals.length * 0.75)] || 1;
+
+  function heatCls(v) {
+    if (!v || v === 0) return 'heat-cell-0';
+    if (v < p25) return 'heat-cell-low';
+    if (v < p75) return 'heat-cell-mid';
+    return 'heat-cell-high';
+  }
+
+  function ageBarHtml(avgDays) {
+    if (avgDays == null) return '<span style="color:#64748b">—</span>';
+    const cls = avgDays <= 30 ? 'res-speed-fast' : avgDays <= 90 ? 'res-speed-mid' : 'res-speed-slow';
+    const w   = Math.min(60, Math.max(6, Math.round(avgDays / 200 * 60)));
+    return `<div style="display:flex;align-items:center;gap:6px">
+      <span style="min-width:36px;font-size:11px">${avgDays}d</span>
+      <span class="res-speed-bar ${cls}" style="width:${w}px"></span>
+    </div>`;
+  }
+
+  let html = '<table class="data-table dv-heat-table"><thead><tr>';
+  html += '<th style="min-width:190px">Denial Code &amp; Reason</th>';
+  html += '<th>Group</th>';
+  if (has_date) {
+    DV_AGE_BUCKETS.forEach(b => { html += `<th style="text-align:center;white-space:nowrap">${b}</th>`; });
+  }
+  html += '<th style="text-align:center;white-space:nowrap">Avg Age<br>(Days)</th>';
+  html += '<th style="text-align:center;white-space:nowrap">Max Age<br>(Days)</th>';
+  html += '<th style="text-align:center;white-space:nowrap">% Over<br>90d</th>';
+  html += '<th style="text-align:right;white-space:nowrap">Enc</th>';
+  html += '<th style="text-align:right;white-space:nowrap">Balance</th>';
+  html += '</tr></thead><tbody>';
+
+  by_code.forEach(r => {
+    const codeLabel = r.code.length > 55 ? r.code.substring(0, 55) + '…' : r.code;
+    const isCritical = (r.avg_age_days || 0) >= 90;
+    html += `<tr${isCritical ? ' style="border-left:3px solid #ef4444"' : ''}>`;
+    html += `<td title="${r.code}" style="font-size:11px">${codeLabel}</td>`;
+    html += `<td style="font-size:11px;color:#64748b">${r.group && r.group !== 'nan' ? r.group : '—'}</td>`;
+    if (has_date) {
+      DV_AGE_BUCKETS.forEach(b => {
+        const v = (r.age_dist && r.age_dist[b]) || 0;
+        html += `<td class="${heatCls(v)}" style="text-align:center;font-size:11px;padding:5px 8px">${v > 0 ? fmtDollar(v) : '—'}</td>`;
+      });
+    }
+    html += `<td style="text-align:center">${ageBarHtml(r.avg_age_days)}</td>`;
+    html += `<td style="text-align:center;font-size:11px;color:${(r.max_age_days||0)>=180?'#ef4444':'#94a3b8'}">${r.max_age_days != null ? r.max_age_days + 'd' : '—'}</td>`;
+    html += `<td style="text-align:center;font-size:11px;color:${(r.pct_over_90||0)>=50?'#ef4444':'#94a3b8'}">${r.pct_over_90 != null ? r.pct_over_90 + '%' : '—'}</td>`;
+    html += `<td style="text-align:right">${fmtNum(r.count)}</td>`;
+    html += `<td style="text-align:right;font-weight:600">${fmtDollar(r.balance)}</td>`;
+    html += '</tr>';
+  });
+  // Totals row
+  const totEnc = by_code.reduce((s, r) => s + (r.count || 0), 0);
+  const totBal = by_code.reduce((s, r) => s + (r.balance || 0), 0);
+  const totBuckets = {};
+  DV_AGE_BUCKETS.forEach(b => {
+    totBuckets[b] = by_code.reduce((s, r) => s + ((r.age_dist && r.age_dist[b]) || 0), 0);
+  });
+  const maxAge = by_code.reduce((m, r) => Math.max(m, r.max_age_days || 0), 0);
+  const wtdAge = totBal > 0
+    ? Math.round(by_code.reduce((s, r) => s + (r.avg_age_days || 0) * (r.balance || 0), 0) / totBal)
+    : null;
+  const over90Sum = DV_AGE_BUCKETS.filter(b => b !== '0-29 days' && b !== '30-59 days' && b !== '60-89 days')
+    .reduce((s, b) => s + (totBuckets[b] || 0), 0);
+  const pct90Tot = totBal > 0 ? Math.round(over90Sum / totBal * 100) : null;
+
+  html += '<tr style="border-top:2px solid #334155;background:#1e293b;font-weight:700">';
+  html += `<td colspan="2" style="font-size:12px;color:#f1f5f9">Total (90% of denials)</td>`;
+  if (has_date) {
+    DV_AGE_BUCKETS.forEach(b => {
+      const v = totBuckets[b];
+      html += `<td class="${heatCls(v)}" style="text-align:center;font-size:11px;padding:5px 8px;font-weight:700">${v > 0 ? fmtDollar(v) : '—'}</td>`;
+    });
+  }
+  html += `<td style="text-align:center">${ageBarHtml(wtdAge)}</td>`;
+  html += `<td style="text-align:center;font-size:11px;color:${maxAge>=180?'#ef4444':'#94a3b8'}">${maxAge > 0 ? maxAge + 'd' : '—'}</td>`;
+  html += `<td style="text-align:center;font-size:11px;color:${(pct90Tot||0)>=50?'#ef4444':'#94a3b8'}">${pct90Tot != null ? pct90Tot + '%' : '—'}</td>`;
+  html += `<td style="text-align:right">${fmtNum(totEnc)}</td>`;
+  html += `<td style="text-align:right;font-weight:700">${fmtDollar(totBal)}</td>`;
+  html += '</tr>';
+
+  html += '</tbody></table>';
+  wrap.innerHTML = html;
+}
+
+function renderDvAgedTable(rows, hasDate) {
+  const tbody = document.querySelector('#dv-aged-table tbody');
+  if (!tbody) return;
+  if (!hasDate) {
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#64748b;padding:20px">Last Denial Date column not available in this ATB file.</td></tr>';
+    return;
+  }
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#22c55e;padding:30px">&#10003; No denials over 90 days old in the latest ATB.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = '';
+  rows.forEach(r => {
+    const tr = document.createElement('tr');
+    if (r.age_days >= 180) tr.style.borderLeft = '3px solid #ef4444';
+    else if (r.age_days >= 90) tr.style.borderLeft = '3px solid #f59e0b';
+    const codeShort = r.code.length > 55 ? r.code.substring(0, 55) + '…' : r.code;
+    const planShort = r.plan && r.plan.length > 28 ? r.plan.substring(0, 28) + '…' : (r.plan || '—');
+    tr.innerHTML = `
+      <td style="font-weight:600">${r.encounter}</td>
+      <td style="font-size:11px" title="${r.code}">${codeShort}</td>
+      <td style="font-size:11px;color:#64748b">${r.group && r.group !== 'nan' ? r.group : '—'}</td>
+      <td style="font-size:11px;color:#94a3b8" title="${r.plan}">${planShort}</td>
+      <td style="font-size:11px;color:#64748b">${r.denial_date}</td>
+      <td style="text-align:center;font-weight:700;color:${r.age_days >= 180 ? '#ef4444' : '#f59e0b'}">${r.age_days}</td>
+      <td style="text-align:right;font-weight:600">${fmtDollar(r.balance)}</td>
+    `;
+    tbody.appendChild(tr);
+  });
 }
 
 // ── BOOT ─────────────────────────────────────────────────────

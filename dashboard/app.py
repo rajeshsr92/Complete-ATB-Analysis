@@ -37,9 +37,15 @@ from analytics import (wow_trending, trending_summary,
                         atb_bifurcation, bifurcation_summary,
                         unbilled_analysis, balance_group_breakdown, aging_velocity,
                         aging_contributors, compute_high_dollar_threshold,
-                        denial_analysis)
+                        denial_analysis, denial_velocity)
 
 app = Flask(__name__)
+
+@app.after_request
+def no_cache(response):
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
+    response.headers['Pragma'] = 'no-cache'
+    return response
 
 _clients = {}
 _clients_lock = threading.Lock()
@@ -438,6 +444,18 @@ def api_denials():
     curr  = _apply_all_filters(wd[week], request)
     prior = _apply_all_filters(wd[prior_week], request)
     return jsonify(denial_analysis(curr, prior))
+
+
+@app.route('/api/denial-velocity')
+def api_denial_velocity():
+    client = request.args.get('client')
+    _, state = _resolve_client(client)
+    if isinstance(state, tuple):
+        return state
+    if state['loading']:
+        return jsonify({'error': 'Data still loading'}), 503
+    filtered = {w: _apply_all_filters(df, request) for w, df in state['weekly_data'].items()}
+    return jsonify(denial_velocity(filtered))
 
 
 # Keep old /api/medicare/* paths as aliases so cached bookmarks still work

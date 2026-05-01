@@ -157,6 +157,7 @@
           <button class="tab-btn" data-tab="bifurcation" onclick="switchTab('bifurcation')">ATB Bifurcation</button>
           <button class="tab-btn" data-tab="contributors" onclick="switchTab('contributors')">90+ Contributors</button>
           <button class="tab-btn" data-tab="denials" onclick="switchTab('denials')">Open Denials</button>
+          <button class="tab-btn" data-tab="denial-velocity" onclick="switchTab('denial-velocity')">Denial Velocity</button>
         </div>
 
         <!-- ── TAB 1: VOLUME TRENDING ─────────────────────── -->
@@ -774,8 +775,7 @@
                 <table class="data-table" id="denial-code-table">
                   <thead>
                     <tr>
-                      <th>Denial Code</th>
-                      <th>Reason</th>
+                      <th>Denial Code &amp; Reason</th>
                       <th>Group</th>
                       <th>Encounters</th>
                       <th>Denied Balance</th>
@@ -785,7 +785,7 @@
                       <th>&Delta; Balance</th>
                     </tr>
                   </thead>
-                  <tbody><tr><td colspan="9" style="text-align:center;color:#64748b;padding:20px">Select a week to load.</td></tr></tbody>
+                  <tbody><tr><td colspan="8" style="text-align:center;color:#64748b;padding:20px">Select a week to load.</td></tr></tbody>
                 </table>
               </div>
             </div>
@@ -822,6 +822,118 @@
           </div><!-- /denial-content -->
 
         </div><!-- /tab-denials -->
+
+        <!-- ── TAB 6: DENIAL VELOCITY ─────────────────────────── -->
+        <div class="tab-pane" id="tab-denial-velocity" style="display:none">
+
+          <!-- Key Insights Panel -->
+          <div class="key-points-panel" id="dv-summary-panel" style="display:none">
+            <div class="kp-title">&#9888; Denial Velocity Insights</div>
+            <div id="dv-summary-list"></div>
+          </div>
+
+          <!-- Unavailable message -->
+          <div id="dv-unavailable" style="display:none;padding:40px;text-align:center;color:#64748b">
+            <div style="font-size:32px;margin-bottom:12px">📊</div>
+            <div style="font-size:15px;font-weight:600;color:#94a3b8">No Denial Velocity Data Available</div>
+            <div style="font-size:12px;margin-top:8px">Requires "Last Denial Code and Reason" column across multiple ATB files.</div>
+          </div>
+
+          <!-- Main content -->
+          <div id="dv-content">
+
+            <!-- 5 KPI Cards -->
+            <div class="kpi-grid" style="grid-template-columns:repeat(5,1fr);margin-bottom:20px">
+              <div class="kpi-card">
+                <div class="kpi-label">Open Denied Balance</div>
+                <div class="kpi-value" id="dv-open-bal">—</div>
+                <div class="kpi-delta neutral" id="dv-open-cnt">latest ATB only</div>
+              </div>
+              <div class="kpi-card">
+                <div class="kpi-label">Denied Encounters</div>
+                <div class="kpi-value" id="dv-open-cnt-val">—</div>
+                <div class="kpi-delta neutral">latest ATB only</div>
+              </div>
+              <div class="kpi-card">
+                <div class="kpi-label">Avg Denial Age</div>
+                <div class="kpi-value" id="dv-avg-age">—</div>
+                <div class="kpi-delta neutral">days since denial date</div>
+              </div>
+              <div class="kpi-card" style="border-color:rgba(239,68,68,0.4)">
+                <div class="kpi-label">90+ Day Balance</div>
+                <div class="kpi-value" style="color:#ef4444" id="dv-over90-bal">—</div>
+                <div class="kpi-delta neutral" id="dv-over90-pct">% of denied</div>
+              </div>
+              <div class="kpi-card" style="border-color:rgba(239,68,68,0.6)">
+                <div class="kpi-label">180+ Day Balance</div>
+                <div class="kpi-value" style="color:#ef4444" id="dv-over180-bal">—</div>
+                <div class="kpi-delta neutral" id="dv-over180-pct">write-off risk</div>
+              </div>
+            </div>
+
+            <!-- Denial Trend Chart -->
+            <div class="chart-card">
+              <div class="chart-card-header">
+                <div>
+                  <div class="chart-card-title">Denial Balance Trend — All ATB Snapshots</div>
+                  <div class="chart-card-sub">Bars = Denied Balance &nbsp;|&nbsp; Line = Denied Encounter Count &nbsp;|&nbsp; Dashed = % of ATB</div>
+                </div>
+              </div>
+              <div class="chart-wrap" style="height:260px">
+                <canvas id="dv-trend-chart"></canvas>
+              </div>
+            </div>
+
+            <!-- Heat Table -->
+            <div class="section-divider">Denial Code Aging Heat Table — Latest ATB</div>
+            <div class="chart-card">
+              <div class="chart-card-header">
+                <div>
+                  <div class="chart-card-title">Denial Code Balance by Denial Age Bucket</div>
+                  <div class="chart-card-sub">
+                    Rows = top denial codes (sorted by oldest avg denial age) &nbsp;|&nbsp; Columns = age buckets since Last Denial Date &nbsp;|&nbsp;
+                    <span style="color:#ef4444">&#9632;</span> High &nbsp;
+                    <span style="color:#f59e0b">&#9632;</span> Mid &nbsp;
+                    <span style="color:#d97706">&#9632;</span> Low &nbsp;
+                    <span style="color:#475569">&#9632;</span> None
+                  </div>
+                </div>
+              </div>
+              <div class="data-table-wrap" id="dv-heat-wrap">
+                <p style="color:#64748b;padding:20px">Loading...</p>
+              </div>
+            </div>
+
+            <!-- Aged Denials Table (90+ days) -->
+            <div class="section-divider">Aged Denials — 90+ Days Outstanding (Latest ATB)</div>
+            <div class="chart-card">
+              <div class="chart-card-header">
+                <div>
+                  <div class="chart-card-title">Encounters with Denial Age ≥ 90 Days</div>
+                  <div class="chart-card-sub">Sorted by denial age — oldest first. Immediate escalation required.</div>
+                </div>
+              </div>
+              <div class="data-table-wrap">
+                <table class="data-table" id="dv-aged-table">
+                  <thead>
+                    <tr>
+                      <th>Encounter #</th>
+                      <th>Denial Code &amp; Reason</th>
+                      <th>Group</th>
+                      <th>Health Plan</th>
+                      <th>Denial Date</th>
+                      <th style="text-align:center">Age (Days)</th>
+                      <th style="text-align:right">Balance</th>
+                    </tr>
+                  </thead>
+                  <tbody><tr><td colspan="7" style="text-align:center;color:#64748b;padding:20px">Loading...</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+
+          </div><!-- /dv-content -->
+
+        </div><!-- /tab-denial-velocity -->
 
       </div><!-- /section-medicare -->
 

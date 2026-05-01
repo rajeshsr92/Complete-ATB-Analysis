@@ -809,6 +809,25 @@ _SELF_PAY_TERMS = frozenset([
     'self', 'selfpay/private pay', 'private', 'uninsured'
 ])
 
+_DENIAL_EMPTY = frozenset(['', 'nan', 'unknown', 'none', 'n/a', '#n/a', 'null'])
+
+
+def _get_denied_df(df):
+    """Return rows with genuine denial codes (non-empty, non-self-pay). Expects decat'd df."""
+    _CODE = 'Last Denial Code and Reason'
+    _RHP  = 'Responsible Health Plan'
+    if _CODE not in df.columns:
+        return df.iloc[0:0]
+    mask = (
+        df[_CODE].notna() &
+        (~df[_CODE].astype(str).str.lower().str.strip().isin(_DENIAL_EMPTY))
+    )
+    sub = df[mask].copy()
+    if _RHP in sub.columns:
+        sp = sub[_RHP].astype(str).str.lower().str.strip()
+        sub = sub[~sp.isin(_SELF_PAY_TERMS)]
+    return sub
+
 _DENIAL_AGE_ORDER = [
     '0-29 days', '30-59 days', '60-89 days', '90-119 days',
     '120-179 days', '180+ days', 'Unknown'
@@ -835,24 +854,23 @@ def denial_analysis(curr_df: pd.DataFrame, prior_df: pd.DataFrame) -> dict:
     """Complete open denial analysis: resolution tracking, Pareto, health plan, denial group, and age."""
     curr_df, prior_df = _decat(curr_df), _decat(prior_df)
 
-    CODE_COL   = 'Last Denial Code'
-    REASON_COL = 'Last Denial Reason'
-    DATE_COL   = 'Last Denial Date'
-    GROUP_COL  = 'Last Denial Group'
-    RHP_COL    = 'Responsible Health Plan'
+    CODE_COL  = 'Last Denial Code and Reason'
+    DATE_COL  = 'Last Denial Date'
+    GROUP_COL = 'Last Denial Group'
+    RHP_COL   = 'Responsible Health Plan'
 
     if CODE_COL not in curr_df.columns:
         return {'available': False}
 
-    has_reason = REASON_COL in curr_df.columns
-    has_date   = DATE_COL   in curr_df.columns
-    has_group  = GROUP_COL  in curr_df.columns
+    has_date  = DATE_COL  in curr_df.columns
+    has_group = GROUP_COL in curr_df.columns
+
+    _DENIAL_EMPTY = frozenset(['', 'nan', 'unknown', 'none', 'n/a', '#n/a', 'null'])
 
     def _get_denied(df):
         mask = (
             df[CODE_COL].notna() &
-            (df[CODE_COL].astype(str).str.strip() != '') &
-            (df[CODE_COL].astype(str).str.lower() != 'nan')
+            (~df[CODE_COL].astype(str).str.lower().str.strip().isin(_DENIAL_EMPTY))
         )
         sub = df[mask].copy()
         if RHP_COL in sub.columns:
@@ -889,10 +907,8 @@ def denial_analysis(curr_df: pd.DataFrame, prior_df: pd.DataFrame) -> dict:
     resolved_df  = prior_d[prior_d['Encounter Number'].isin(resolved_encs)]
     continued_df = curr_d[curr_d['Encounter Number'].isin(continued_encs)]
 
-    # ── By denial code (+ reason + group) — Pareto ───────────────
+    # ── By denial code+reason (+ group) — Pareto ─────────────────
     group_cols = [CODE_COL]
-    if has_reason:
-        group_cols.append(REASON_COL)
     if has_group:
         group_cols.append(GROUP_COL)
 
@@ -922,8 +938,7 @@ def denial_analysis(curr_df: pd.DataFrame, prior_df: pd.DataFrame) -> dict:
             pb  = prior_code_map.get(key, 0.0)
             by_code_rows.append({
                 'code':           str(r[CODE_COL]),
-                'reason':         str(r[REASON_COL]) if has_reason else '',
-                'group':          str(r[GROUP_COL])  if has_group  else '',
+                'group':          str(r[GROUP_COL]) if has_group else '',
                 'count':          int(r['count']),
                 'balance':        cb,
                 'pct_of_denied':  pct,
@@ -1073,7 +1088,6 @@ def denial_analysis(curr_df: pd.DataFrame, prior_df: pd.DataFrame) -> dict:
         'by_group':       by_group_rows,
         'by_health_plan': by_hp_rows,
         'by_denial_age':  by_age_rows,
-        'has_reason':     has_reason,
         'has_group':      has_group,
         'has_date':       has_date,
     }
@@ -1145,12 +1159,7 @@ def denial_summary(data: dict) -> list:
         total_codes = len(by_code)
         pct_codes   = round(len(top90_codes) / total_codes * 100, 0) if total_codes else 0
         top3        = by_code[:3]
-        top3_labels = []
-        for r in top3:
-            lbl = r['code']
-            if r.get('reason') and r['reason'] not in ('', 'nan'):
-                lbl += ' — ' + r['reason'][:35]
-            top3_labels.append(lbl)
+        top3_labels = [r['code'][:50] for r in top3]
         top3_str = '; '.join(top3_labels)
         points.append({
             'type': 'danger',
@@ -1397,3 +1406,280 @@ def aging_contributors(latest_df: pd.DataFrame, prior_df: pd.DataFrame, top_n: i
         'by_health_plan': by_rhp,
         'rolled_by_fin_class': rolled_by_rfc,
     }
+
+
+def denial_velocity(weekly_data: dict) -> dict:
+    """Denial velocity: latest ATB open denials + denial age analysis + WoW trend."""
+    _CODE  = 'Last Denial Code and Reason'
+    _GROUP = 'Last Denial Group'
+    _RHP   = 'Responsible Health Plan'
+    _DATE  = 'Last Denial Date'
+
+    sorted_weeks = sorted(weekly_data.keys())
+    if not sorted_weeks:
+        return {'available': False}
+
+    latest_week = sorted_weeks[-1]
+    latest_df   = _decat(weekly_data[latest_week])
+
+    if _CODE not in latest_df.columns:
+        return {'available': False}
+
+    # ── WoW trend — all weeks for trend chart only ────────────────
+    trend = []
+    for week in sorted_weeks:
+        df = _decat(weekly_data[week])
+        denied_w  = _get_denied_df(df)
+        total_bal = float(df['Balance Amount'].sum())
+        bal       = float(denied_w['Balance Amount'].sum())
+        trend.append({
+            'week':       week,
+            'count':      int(denied_w['Encounter Number'].nunique()),
+            'balance':    round(bal, 2),
+            'pct_of_atb': _safe_pct(bal, total_bal),
+        })
+
+    # ── Latest ATB only — core velocity analysis ──────────────────
+    denied = _get_denied_df(latest_df)
+    if denied.empty:
+        return {
+            'available': True, 'weeks': sorted_weeks, 'latest_week': latest_week,
+            'kpis': {}, 'trend': trend, 'by_code': [],
+            'by_age': [], 'aged_denials': [], 'has_date': False,
+            'summary_points': [],
+        }
+
+    denied = (denied
+              .sort_values('Balance Amount', ascending=False)
+              .drop_duplicates('Encounter Number')
+              .copy())
+
+    has_date = _DATE in denied.columns and 'REPORT_DATE' in denied.columns
+    has_group = _GROUP in denied.columns
+
+    if has_date:
+        rpt_dts  = pd.to_datetime(denied['REPORT_DATE'], errors='coerce').dropna()
+        ref_date = rpt_dts.max() if len(rpt_dts) else pd.Timestamp.now()
+        denied   = denied.copy()
+        denied['_denial_dt']  = pd.to_datetime(denied[_DATE], errors='coerce')
+        denied['_age_days']   = (ref_date - denied['_denial_dt']).dt.days
+        denied['_age_bucket'] = denied['_age_days'].apply(
+            lambda d: _denial_age_bucket(d) if pd.notna(d) else 'Unknown'
+        )
+    else:
+        denied['_age_days']   = None
+        denied['_age_bucket'] = 'Unknown'
+
+    total_denied_bal = float(denied['Balance Amount'].sum())
+    denied_cnt       = int(len(denied))
+
+    # ── By denial code — sorted by avg denial age (slowest first) ─
+    group_cols = [_CODE] + ([_GROUP] if has_group else [])
+    by_code = []
+    for keys, sub in denied.groupby(group_cols, dropna=False):
+        code  = str(keys[0]) if isinstance(keys, tuple) else str(keys)
+        group = str(keys[1]) if isinstance(keys, tuple) and len(keys) > 1 else ''
+        bal   = float(sub['Balance Amount'].sum())
+        cnt   = int(len(sub))
+
+        # Per-age-bucket balance breakdown for heat columns
+        age_dist = {}
+        for bucket in _DENIAL_AGE_ORDER:
+            sub_b = sub[sub['_age_bucket'] == bucket] if has_date else sub.iloc[0:0]
+            age_dist[bucket] = round(float(sub_b['Balance Amount'].sum()), 2)
+
+        avg_age = None
+        max_age = None
+        pct_90  = None
+        if has_date:
+            valid_ages = sub['_age_days'].dropna()
+            if len(valid_ages):
+                avg_age = round(float(valid_ages.mean()), 0)
+                max_age = int(valid_ages.max())
+            over_90_bal = float(sub[sub['_age_days'] >= 90]['Balance Amount'].sum())
+            pct_90 = _safe_pct(over_90_bal, bal)
+
+        by_code.append({
+            'code':          code,
+            'group':         group,
+            'count':         cnt,
+            'balance':       round(bal, 2),
+            'avg_age_days':  avg_age,
+            'max_age_days':  max_age,
+            'pct_over_90':   pct_90,
+            'pct_of_denied': _safe_pct(bal, total_denied_bal),
+            'age_dist':      age_dist,
+        })
+
+    # Keep codes covering 90% of total denied balance, then sort by oldest avg age
+    by_code.sort(key=lambda r: -r['balance'])
+    cutoff = total_denied_bal * 0.90
+    cumsum = 0.0
+    keep = []
+    for r in by_code:
+        keep.append(r)
+        cumsum += r['balance']
+        if cumsum >= cutoff:
+            break
+    by_code = sorted(keep, key=lambda r: (-(r['avg_age_days'] or 0), -r['balance']))
+
+    # ── Overall by-age-bucket distribution ───────────────────────
+    by_age = []
+    if has_date:
+        for bucket in _DENIAL_AGE_ORDER:
+            sub = denied[denied['_age_bucket'] == bucket]
+            if len(sub):
+                by_age.append({
+                    'bucket':        bucket,
+                    'count':         int(len(sub)),
+                    'balance':       round(float(sub['Balance Amount'].sum()), 2),
+                    'pct_of_denied': _safe_pct(float(sub['Balance Amount'].sum()), total_denied_bal),
+                    'avg_age_days':  round(float(sub['_age_days'].mean()), 0),
+                })
+
+    # ── Aged denials — top 90+ day encounters ────────────────────
+    aged_denials = []
+    if has_date:
+        aged = (denied[denied['_age_days'] >= 90]
+                .sort_values('_age_days', ascending=False)
+                .head(100))
+        for _, row in aged.iterrows():
+            aged_denials.append({
+                'encounter':   int(row['Encounter Number']) if not pd.isna(row.get('Encounter Number')) else 0,
+                'code':        str(row[_CODE]),
+                'group':       str(row[_GROUP]) if has_group and _GROUP in row.index else '',
+                'plan':        str(row[_RHP])   if _RHP in row.index else '',
+                'denial_date': str(row['_denial_dt'].date()) if pd.notna(row.get('_denial_dt')) else '—',
+                'age_days':    int(row['_age_days']) if pd.notna(row.get('_age_days')) else 0,
+                'balance':     round(float(row['Balance Amount']), 2),
+            })
+
+    # ── KPIs ─────────────────────────────────────────────────────
+    over_90_bal  = float(denied[denied['_age_days'] >= 90]['Balance Amount'].sum())  if has_date else 0.0
+    over_180_bal = float(denied[denied['_age_days'] >= 180]['Balance Amount'].sum()) if has_date else 0.0
+    avg_age_all  = None
+    if has_date:
+        valid = denied['_age_days'].dropna()
+        if len(valid):
+            avg_age_all = round(float(valid.mean()), 0)
+
+    kpis = {
+        'open_denied_balance': round(total_denied_bal, 2),
+        'open_denied_count':   denied_cnt,
+        'avg_age_days':        avg_age_all,
+        'pct_over_90_days':    _safe_pct(over_90_bal,  total_denied_bal),
+        'over_90_balance':     round(over_90_bal, 2),
+        'pct_over_180_days':   _safe_pct(over_180_bal, total_denied_bal),
+        'over_180_balance':    round(over_180_bal, 2),
+    }
+
+    result = {
+        'available':    True,
+        'weeks':        sorted_weeks,
+        'latest_week':  latest_week,
+        'kpis':         kpis,
+        'trend':        trend,
+        'by_code':      by_code,
+        'by_age':       by_age,
+        'aged_denials': aged_denials,
+        'has_date':     has_date,
+    }
+    result['summary_points'] = denial_velocity_summary(result)
+    return result
+
+
+def denial_velocity_summary(data: dict) -> list:
+    """Generate 8 key insights from denial_velocity result."""
+    points  = []
+    kpis    = data.get('kpis', {})
+    trend   = data.get('trend', [])
+    by_code = data.get('by_code', [])
+    by_age  = data.get('by_age', [])
+    has_date = data.get('has_date', False)
+
+    open_bal   = kpis.get('open_denied_balance', 0.0)
+    open_cnt   = kpis.get('open_denied_count', 0)
+    avg_age    = kpis.get('avg_age_days')
+    pct_90     = kpis.get('pct_over_90_days')
+    over_90_bal = kpis.get('over_90_balance', 0.0)
+    pct_180    = kpis.get('pct_over_180_days')
+    over_180_bal = kpis.get('over_180_balance', 0.0)
+
+    # 1. Open denial snapshot
+    points.append({
+        'type': 'info',
+        'text': f'Latest ATB has {open_cnt:,} open denied encounters totalling {_fmt_dollar(open_bal)}. '
+                f'Analysis is based on current snapshot only — resolved denials are excluded.',
+    })
+
+    # 2. Average denial age
+    if avg_age is not None:
+        t = 'danger' if avg_age > 90 else ('warning' if avg_age > 45 else 'info')
+        points.append({
+            'type': t,
+            'text': f'Average denial age: {avg_age:.0f} days since Last Denial Date. '
+                    f'Denials older than 90 days are at high risk of write-off.',
+        })
+
+    # 3. 90+ day exposure
+    if pct_90 is not None:
+        points.append({
+            'type': 'danger' if pct_90 > 30 else 'warning',
+            'text': f'{pct_90}% of denied balance ({_fmt_dollar(over_90_bal)}) has been in denial status '
+                    f'for 90+ days — these require immediate escalation.',
+        })
+
+    # 4. 180+ day write-off risk
+    if pct_180 is not None and pct_180 > 0:
+        points.append({
+            'type': 'danger',
+            'text': f'{pct_180}% of denied balance ({_fmt_dollar(over_180_bal)}) is 180+ days old — '
+                    f'critical write-off risk; timely filing deadlines likely breached.',
+        })
+
+    # 5. WoW trend
+    if len(trend) >= 2:
+        d_bal = trend[-1]['balance'] - trend[0]['balance']
+        d_pct = _safe_pct(d_bal, trend[0]['balance'])
+        sign  = '+' if d_pct and d_pct > 0 else ''
+        points.append({
+            'type': 'danger' if d_bal > 0 else 'success',
+            'text': f'Denied balance {"grew" if d_bal > 0 else "declined"} by {_fmt_dollar(abs(d_bal))} '
+                    f'({sign}{d_pct}%) from {trend[0]["week"]} to {trend[-1]["week"]}.',
+        })
+
+    # 6. Code with highest average denial age (most stuck)
+    aged_codes = [r for r in by_code if r.get('avg_age_days') is not None]
+    if aged_codes:
+        oldest = max(aged_codes, key=lambda r: r['avg_age_days'])
+        points.append({
+            'type': 'danger',
+            'text': f'Oldest average denial age: "{oldest["code"][:60]}" — '
+                    f'{oldest["avg_age_days"]:.0f} days avg ({oldest["count"]:,} enc, '
+                    f'{_fmt_dollar(oldest["balance"])} balance).',
+        })
+
+    # 7. Top balance code with 90%+ over 90 days
+    stuck = [r for r in by_code if (r.get('pct_over_90') or 0) >= 90 and r['balance'] > 0]
+    if stuck:
+        worst = max(stuck, key=lambda r: r['balance'])
+        points.append({
+            'type': 'danger',
+            'text': f'"{worst["code"][:60]}" — {worst["pct_over_90"]}% of its {_fmt_dollar(worst["balance"])} '
+                    f'denial balance is 90+ days old ({worst["count"]:,} encounters).',
+        })
+
+    # 8. Largest single-week denial spike from trend
+    max_jump_w, max_jump_v = None, 0.0
+    for i in range(1, len(trend)):
+        delta = trend[i]['balance'] - trend[i - 1]['balance']
+        if delta > max_jump_v:
+            max_jump_v = delta
+            max_jump_w = trend[i]['week']
+    if max_jump_w and max_jump_v > 0:
+        points.append({
+            'type': 'warning',
+            'text': f'Largest single-week denial spike: +{_fmt_dollar(max_jump_v)} entering week {max_jump_w}.',
+        })
+
+    return points

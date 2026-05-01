@@ -46,18 +46,21 @@ NEEDED_COLS = [
 # Optional columns loaded when present in the source file
 OPTIONAL_COLS = [
     'Billing Entity',
-    'Last Denial Code', 'Last Denial Reason', 'Last Denial Date', 'Last Denial Group',
+    'Last Denial Code and Reason', 'Last Denial Date', 'Last Denial Group',
 ]
 
-# String columns stored as categoricals to reduce memory usage
+# String columns stored as categoricals — filled with 'Unknown' when empty
 CAT_COLS = [
     'Primary Health Plan', 'Responsible Financial Class', 'Responsible Health Plan',
     'Discharge Aging Category', 'Unbilled Aging Category', 'Balance Group',
-    'Billing Entity', 'Last Denial Code', 'Last Denial Reason', 'Last Denial Group',
+    'Billing Entity',
 ]
 
+# Denial columns: categoricals but NOT filled with 'Unknown' — empty stays NaN
+DENIAL_CAT_COLS = ['Last Denial Code and Reason', 'Last Denial Group']
+
 # Bump when filter/column logic changes — forces pkl regeneration
-PKL_VERSION = 'v5'
+PKL_VERSION = 'v6'
 
 
 def _data_root():
@@ -95,26 +98,37 @@ def get_atb_folder(client_name=None):
 
 def load_atb_file(path, progress_cb=None):
     """Load ATB Excel (Balance > 0, all payers). Uses versioned pkl cache."""
+    fname = os.path.basename(path)
     pkl_path = path + f'.atb_{PKL_VERSION}.pkl'
+
+    # Check current-version cache
     try:
         xlsx_mtime = os.path.getmtime(path)
         if os.path.exists(pkl_path) and os.path.getmtime(pkl_path) > xlsx_mtime:
             if progress_cb:
-                progress_cb(f'[CACHE] {os.path.basename(path)}')
+                progress_cb(f'[CACHE] {fname}')
             return pd.read_pickle(pkl_path)
     except Exception:
         pass
 
     if progress_cb:
-        progress_cb(f'[READ]  {os.path.basename(path)} (first time: 1-3 min)...')
+        progress_cb(f'[READ]  {fname} (first time: 1-3 min)...')
 
     _wanted = set(NEEDED_COLS + OPTIONAL_COLS)
-    # Try calamine first (10-20x faster than openpyxl); fall back if not installed
     try:
-        import python_calamine  # noqa: F401 — just checking availability
-        df = pd.read_excel(path, usecols=lambda c: c in _wanted, engine='calamine')
-    except (ImportError, Exception):
-        df = pd.read_excel(path, usecols=lambda c: c in _wanted, engine='openpyxl')
+        try:
+            import python_calamine  # noqa: F401
+            df = pd.read_excel(path, usecols=lambda c: c in _wanted, engine='calamine')
+        except (ImportError, Exception):
+            df = pd.read_excel(path, usecols=lambda c: c in _wanted, engine='openpyxl')
+    except PermissionError:
+        # File locked (open in Excel / OneDrive sync) — fall back to any existing pkl
+        existing = sorted(glob.glob(path + '.atb_*.pkl'), key=os.path.getmtime, reverse=True)
+        if existing:
+            if progress_cb:
+                progress_cb(f'[FALLBACK] {fname} — file locked, using cached version')
+            return pd.read_pickle(existing[0])
+        raise
 
     # Coerce types
     df['Encounter Number'] = pd.to_numeric(df['Encounter Number'], errors='coerce')
@@ -122,14 +136,16 @@ def load_atb_file(path, progress_cb=None):
     for col in CAT_COLS:
         if col in df.columns:
             df[col] = df[col].fillna('Unknown').astype('category')
+    # Denial columns: keep NaN for empty so absence of denial is detectable
+    for col in DENIAL_CAT_COLS:
+        if col in df.columns:
+            df[col] = df[col].astype('category')
 
-    # Only keep rows with a positive balance
     df = df[df['Balance Amount'] > 0].copy()
-
     df.to_pickle(pkl_path)
 
     if progress_cb:
-        progress_cb(f'[DONE]  {os.path.basename(path)} — {len(df):,} rows (Balance > $0, all payers)')
+        progress_cb(f'[DONE]  {fname} — {len(df):,} rows (Balance > $0, all payers)')
     return df
 
 
