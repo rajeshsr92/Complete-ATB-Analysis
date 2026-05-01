@@ -181,14 +181,14 @@ body { font-family: 'Inter', 'Segoe UI', sans-serif; background: var(--bg-dark);
 }
 
 /* ── PAGE CONTENT ─────────────────────────────── */
-#content { padding: 24px; flex: 1; }
+#content { padding: 16px 20px; flex: 1; }
 
 /* ── TAB NAV ─────────────────────────────────── */
 .tab-nav {
   display: flex;
   gap: 4px;
   border-bottom: 1px solid var(--border);
-  margin-bottom: 24px;
+  margin-bottom: 14px;
 }
 .tab-btn {
   padding: 10px 18px;
@@ -293,8 +293,8 @@ body { font-family: 'Inter', 'Segoe UI', sans-serif; background: var(--bg-dark);
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 12px 18px;
-  margin-bottom: 20px;
+  padding: 8px 16px;
+  margin-bottom: 12px;
   flex-wrap: wrap;
 }
 .filter-bar-label {
@@ -498,62 +498,62 @@ body { font-family: 'Inter', 'Segoe UI', sans-serif; background: var(--bg-dark);
 
 /* ── MIGRATION MATRIX ─────────────────────────────────── */
 .matrix-container {
-  overflow: auto;
-  max-height: 560px;
+  overflow-x: auto;
+  overflow-y: visible;
   border-radius: 8px;
   border: 1px solid var(--border);
 }
 .matrix-table {
   border-collapse: separate;
-  border-spacing: 2px;
-  font-size: 11px;
+  border-spacing: 1px;
+  font-size: 10px;
   min-width: 100%;
 }
 .matrix-table th {
   background: rgba(14,165,233,0.08);
-  padding: 7px 10px;
+  padding: 5px 7px;
   font-weight: 600;
   color: var(--text-muted);
   white-space: nowrap;
-  font-size: 10px;
+  font-size: 9px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   position: sticky;
 }
-.matrix-table th.row-header { left: 0; z-index: 2; text-align: left; min-width: 90px; }
+.matrix-table th.row-header { left: 0; z-index: 2; text-align: left; min-width: 72px; }
 .matrix-table th.col-header { top: 0; z-index: 1; text-align: center; }
 .matrix-table th.corner { top: 0; left: 0; z-index: 3; }
 .matrix-cell {
-  padding: 6px 8px;
+  padding: 4px 5px;
   text-align: center;
-  border-radius: 4px;
+  border-radius: 3px;
   cursor: default;
-  min-width: 80px;
+  min-width: 64px;
   position: relative;
   transition: opacity 0.15s;
 }
 .matrix-cell:hover { opacity: 0.85; outline: 1px solid rgba(255,255,255,0.3); }
-.matrix-cell .cell-val { font-weight: 700; font-size: 11px; }
-.matrix-cell .cell-cnt { font-size: 9px; opacity: 0.75; margin-top: 1px; }
-.matrix-cell .cell-pct { font-size: 9px; opacity: 0.75; }
+.matrix-cell .cell-val { font-weight: 700; font-size: 10px; }
+.matrix-cell .cell-cnt { font-size: 8px; opacity: 0.75; margin-top: 0; }
+.matrix-cell .cell-pct { font-size: 8px; opacity: 0.75; }
 .matrix-cell.empty { background: rgba(30,45,66,0.4); }
 
 /* ── MIGRATION SUMMARY CARDS ─────────────────────────────── */
 .migration-summary {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 16px;
-  margin-top: 20px;
+  gap: 10px;
+  margin-top: 10px;
 }
 .msummary-card {
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 16px;
+  border-radius: 8px;
+  padding: 10px 14px;
 }
-.msummary-card .ms-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; }
-.msummary-card .ms-value { font-size: 22px; font-weight: 700; margin: 6px 0 2px; }
-.msummary-card .ms-sub { font-size: 12px; color: var(--text-muted); }
+.msummary-card .ms-label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.msummary-card .ms-value { font-size: 18px; font-weight: 700; margin: 4px 0 2px; }
+.msummary-card .ms-sub { font-size: 11px; color: var(--text-muted); }
 .msummary-card.danger { border-color: rgba(239,68,68,0.4); }
 .msummary-card.danger .ms-value { color: var(--danger); }
 .msummary-card.success { border-color: rgba(34,197,94,0.3); }
@@ -573,13 +573,14 @@ body { font-family: 'Inter', 'Segoe UI', sans-serif; background: var(--bg-dark);
 /* ── MATRIX LEGEND ─────────────────────────────────── */
 .matrix-legend {
   display: flex;
-  gap: 20px;
-  font-size: 11px;
+  gap: 14px;
+  font-size: 10px;
   color: var(--text-muted);
-  margin-bottom: 12px;
+  margin-bottom: 6px;
   align-items: center;
+  flex-wrap: wrap;
 }
-.legend-dot { width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; }
+.legend-dot { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
 
 /* ── LOADING OVERLAY ─────────────────────────────────── */
 #loading-overlay {
@@ -644,14 +645,32 @@ body { font-family: 'Inter', 'Segoe UI', sans-serif; background: var(--bg-dark);
   background: rgba(14,165,233,0.07);
   border: 1px solid rgba(14,165,233,0.2);
   border-radius: 8px;
-  padding: 14px 18px;
-  font-size: 13px;
+  padding: 8px 14px;
+  font-size: 11px;
   color: var(--text-muted);
-  margin-bottom: 20px;
-  line-height: 1.6;
+  margin-bottom: 8px;
+  line-height: 1.45;
 }
 .rollover-narrative strong { color: var(--text-primary); }
 .rollover-narrative .highlight { color: var(--accent); font-weight: 600; }
+
+/* ── SECTION DIVIDER ────────────────────────────────── */
+.section-divider {
+  border-top: 1px solid var(--border);
+  margin: 20px 0 14px;
+  padding-top: 6px;
+  font-size: 10px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+/* ── ROLLOVER TAB COMPACT LAYOUT ─────────────────────── */
+#tab-rollover .controls-bar { margin-bottom: 8px; }
+#tab-rollover .chart-card { padding: 12px 14px; margin-bottom: 8px; }
+#tab-rollover .chart-card-header { margin-bottom: 8px; }
+#tab-rollover .chart-card-title { font-size: 13px; }
+#tab-rollover .chart-card-sub { font-size: 11px; }
 .rollover-narrative .danger-text { color: var(--danger); font-weight: 600; }
 .rollover-narrative .success-text { color: var(--success); font-weight: 600; }
 

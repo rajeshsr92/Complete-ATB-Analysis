@@ -406,17 +406,67 @@ function populateWeekSelectors() {
   if (selContrib && allWeeks.length >= 1) selContrib.value = allWeeks[allWeeks.length - 1];
 }
 
+// ── SHARED: TAB SUMMARY PANEL ────────────────────────────────
+function renderTabSummary(panelId, points) {
+  const el = document.getElementById(panelId);
+  if (!el) return;
+  const panel = el.parentElement;
+  if (!points || !points.length) { if (panel) panel.style.display = 'none'; return; }
+  if (panel) panel.style.display = '';
+  el.innerHTML = points.map(p => `
+    <div class="kp-item">
+      <div class="kp-dot ${p.type || 'info'}"></div>
+      <div class="kp-text">${p.text}</div>
+    </div>`).join('');
+}
+
 // ── TAB 1: TRENDING ──────────────────────────────────────────
 function loadTrending() {
   fetch(apiUrl('/api/trending'))
     .then(r => r.json())
     .then(data => {
-      if (!Array.isArray(data)) return;
-      renderKpiCards(data);
-      renderTrendChart(data);
-      renderTrendTable(data);
+      const rows = Array.isArray(data) ? data : (data.rows || []);
+      if (!rows.length) return;
+      renderKpiCards(rows);
+      renderTrendChart(rows);
+      renderTrendTable(rows);
+      renderTabSummary('trending-summary', data.summary || []);
+      const latestWeek = rows[rows.length - 1]?.week;
+      if (latestWeek) loadBalanceGroups(latestWeek);
     })
     .catch(() => {});
+}
+
+function loadBalanceGroups(week) {
+  fetch(apiUrl('/api/balance-groups', `week=${week}`))
+    .then(r => r.json())
+    .then(data => {
+      if (!data || !data.available) return;
+      renderBalanceGroupTable(data.groups || []);
+    })
+    .catch(() => {});
+}
+
+function renderBalanceGroupTable(groups) {
+  const wrap = document.getElementById('balance-group-wrap');
+  if (!wrap || !groups.length) { if (wrap) wrap.innerHTML = '<p style="color:#64748b;padding:12px;font-size:12px">No Balance Group data available.</p>'; return; }
+  let html = '<table class="data-table"><thead><tr>' +
+    '<th>Group</th><th>Encounters</th><th>Balance</th><th>% of Total</th><th>Prior Balance</th><th>WoW &Delta;</th><th>WoW &Delta; %</th>' +
+    '</tr></thead><tbody>';
+  groups.forEach(g => {
+    const dCls = g.delta_balance > 0 ? 'up' : g.delta_balance < 0 ? 'down' : 'neutral';
+    html += `<tr>
+      <td>${g.name}</td>
+      <td>${fmtNum(g.curr_count)}</td>
+      <td>${fmtDollar(g.curr_balance)}</td>
+      <td>${g.pct_of_total != null ? g.pct_of_total + '%' : '—'}</td>
+      <td>${fmtDollar(g.prior_balance)}</td>
+      <td class="${dCls}">${fmtDollar(g.delta_balance)}</td>
+      <td class="${dCls}">${g.delta_pct != null ? fmtPct(g.delta_pct) : '—'}</td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  wrap.innerHTML = html;
 }
 
 function renderKpiCards(data) {
@@ -484,6 +534,19 @@ function renderTrendChart(data) {
           tension: 0.3,
           fill: true,
           yAxisID: 'y2',
+        },
+        {
+          type: 'line',
+          label: '90+ % of Balance',
+          data: data.map(d => d.over_90_pct || 0),
+          borderColor: '#ef4444',
+          backgroundColor: 'rgba(239,68,68,0.0)',
+          pointBackgroundColor: '#ef4444',
+          pointRadius: 4,
+          borderDash: [4, 3],
+          tension: 0.3,
+          fill: false,
+          yAxisID: 'yPct',
         }
       ]
     },
@@ -495,9 +558,11 @@ function renderTrendChart(data) {
         legend: { labels: { color: '#94a3b8', font: { size: 12 } } },
         tooltip: {
           callbacks: {
-            label: ctx => ctx.dataset.yAxisID === 'y1'
-              ? ` ${ctx.dataset.label}: ${fmtDollar(ctx.parsed.y)}`
-              : ` ${ctx.dataset.label}: ${fmtNum(ctx.parsed.y)}`
+            label: ctx => {
+              if (ctx.dataset.yAxisID === 'y1') return ` ${ctx.dataset.label}: ${fmtDollar(ctx.parsed.y)}`;
+              if (ctx.dataset.yAxisID === 'yPct') return ` ${ctx.dataset.label}: ${ctx.parsed.y}%`;
+              return ` ${ctx.dataset.label}: ${fmtNum(ctx.parsed.y)}`;
+            }
           }
         }
       },
@@ -512,6 +577,13 @@ function renderTrendChart(data) {
           type: 'linear', position: 'right',
           ticks: { color: '#f59e0b', callback: v => fmtNum(v) },
           grid: { drawOnChartArea: false }
+        },
+        yPct: {
+          type: 'linear', position: 'right',
+          min: 0, max: 100,
+          ticks: { color: '#ef4444', callback: v => v + '%' },
+          grid: { drawOnChartArea: false },
+          display: false,
         }
       }
     }
@@ -555,6 +627,7 @@ function loadRollover() {
       renderMigrationMatrix(data, fromWeek, toWeek);
       renderMigrationSummary(data, fromWeek, toWeek);
       renderMigrationNarrative(data, fromWeek, toWeek);
+      renderTabSummary('rollover-summary', data.summary_points || []);
     })
     .catch(() => {});
 }
@@ -707,6 +780,95 @@ function loadBifurcation() {
       renderBifurBarChart(data);
       renderBifurDonutChart(data);
       renderBifurTable(data);
+      renderTabSummary('bifur-summary', data.summary_points || []);
+      renderUnbilledPanel(data.unbilled || {});
+      loadVelocity(week);
+    })
+    .catch(() => {});
+}
+
+function renderUnbilledPanel(data) {
+  if (!data.available) {
+    const panel = document.getElementById('unbilled-panel');
+    if (panel) panel.style.display = 'none';
+    return;
+  }
+  const dnfbVal = document.getElementById('unbilled-dnfb-val');
+  const dnfbDelta = document.getElementById('unbilled-dnfb-delta');
+  const nonVal = document.getElementById('unbilled-non-val');
+  const nonDelta = document.getElementById('unbilled-non-delta');
+
+  if (dnfbVal) dnfbVal.textContent = fmtDollar(data.dnfb?.curr_balance);
+  if (dnfbDelta) {
+    const d = data.dnfb?.delta_balance;
+    const p = data.dnfb?.delta_pct;
+    const cls = d > 0 ? 'up' : d < 0 ? 'down' : 'neutral';
+    dnfbDelta.innerHTML = d != null ? `${d > 0 ? '▲' : '▼'} ${fmtDollar(d)} (${fmtPct(p)}) vs prior` : 'vs prior week';
+    dnfbDelta.className = 'kpi-delta ' + cls;
+  }
+  if (nonVal) nonVal.textContent = fmtDollar(data.non_dnfb?.curr_balance);
+  if (nonDelta) {
+    const d = data.non_dnfb?.delta_balance;
+    const p = data.non_dnfb?.delta_pct;
+    const cls = d > 0 ? 'up' : d < 0 ? 'down' : 'neutral';
+    nonDelta.innerHTML = d != null ? `${d > 0 ? '▲' : '▼'} ${fmtDollar(d)} (${fmtPct(p)}) vs prior` : 'vs prior week';
+    nonDelta.className = 'kpi-delta ' + cls;
+  }
+
+  const tbody = document.querySelector('#unbilled-table tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  (data.rows || []).forEach(r => {
+    const dCls = r.delta_balance > 0 ? 'up' : r.delta_balance < 0 ? 'down' : 'neutral';
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${r.bucket}</td>
+      <td>${fmtNum(r.count)}</td>
+      <td>${fmtDollar(r.balance)}</td>
+      <td>${r.pct_of_total != null ? r.pct_of_total + '%' : '—'}</td>
+      <td>${fmtDollar(r.prior_balance)}</td>
+      <td class="${dCls}">${fmtDollar(r.delta_balance)}</td>
+      <td class="${dCls}">${r.delta_pct != null ? fmtPct(r.delta_pct) : '—'}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function loadVelocity(week) {
+  fetch(apiUrl('/api/aging-velocity', `week=${week}`))
+    .then(r => r.json())
+    .then(data => {
+      if (!data || !data.available) {
+        const panel = document.getElementById('velocity-panel');
+        if (panel) panel.style.display = 'none';
+        return;
+      }
+      const s = data.summary;
+      const avgEl = document.getElementById('vel-avg-days');
+      const pct90El = document.getElementById('vel-pct-90');
+      const pct180El = document.getElementById('vel-pct-180');
+      const noteEl = document.getElementById('vel-valid-note');
+      if (avgEl) avgEl.textContent = s.avg_days != null ? s.avg_days + ' days' : '—';
+      if (pct90El) pct90El.textContent = s.pct_over_90 != null ? s.pct_over_90 + '%' : '—';
+      if (pct180El) pct180El.textContent = s.pct_over_180 != null ? s.pct_over_180 + '%' : '—';
+      if (noteEl) noteEl.textContent = s.valid_count != null
+        ? `${fmtNum(s.valid_count)} of ${fmtNum(s.total_count)} encounters` : 'all encounters';
+
+      const tbody = document.querySelector('#velocity-table tbody');
+      if (!tbody) return;
+      tbody.innerHTML = '';
+      (data.by_fin_class || []).forEach(r => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${r.name}</td>
+          <td>${fmtNum(r.count)}</td>
+          <td>${r.avg_days != null ? Math.round(r.avg_days) : '—'}</td>
+          <td>${r.median_days != null ? Math.round(r.median_days) : '—'}</td>
+          <td>${r.max_days != null ? r.max_days : '—'}</td>
+          <td>${fmtDollar(r.balance)}</td>
+        `;
+        tbody.appendChild(tr);
+      });
     })
     .catch(() => {});
 }
@@ -884,7 +1046,7 @@ function loadContributors() {
     .then(r => r.json())
     .then(data => {
       if (!data || data.error) return;
-      renderKeyPoints(data.key_points || []);
+      renderTabSummary('key-points-list', data.key_points || []);
       renderContribKpis(data.summary);
       renderRfcBarChart(data.by_fin_class || []);
       renderRolledChart(data.rolled_by_fin_class || []);

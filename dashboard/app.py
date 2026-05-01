@@ -32,7 +32,10 @@ import threading
 from flask import Flask, render_template, jsonify, request
 from data_loader import (load_all_atb_files, discover_clients, get_filter_values,
                           get_billing_entities)
-from analytics import (wow_trending, aging_migration, atb_bifurcation,
+from analytics import (wow_trending, trending_summary,
+                        aging_migration, rollover_summary,
+                        atb_bifurcation, bifurcation_summary,
+                        unbilled_analysis, balance_group_breakdown, aging_velocity,
                         aging_contributors, compute_high_dollar_threshold)
 
 app = Flask(__name__)
@@ -244,7 +247,8 @@ def api_trending():
     if state['loading']:
         return jsonify({'error': 'Data still loading'}), 503
     filtered = {w: _apply_all_filters(df, request) for w, df in state['weekly_data'].items()}
-    return jsonify(wow_trending(filtered))
+    rows = wow_trending(filtered)
+    return jsonify({'rows': rows, 'summary': trending_summary(rows)})
 
 
 @app.route('/api/migration')
@@ -264,7 +268,9 @@ def api_migration():
         return jsonify({'error': 'Week not found'}), 404
     a = _apply_all_filters(wd[from_week], request)
     b = _apply_all_filters(wd[to_week], request)
-    return jsonify(aging_migration(a, b))
+    result = aging_migration(a, b)
+    result['summary_points'] = rollover_summary(result)
+    return jsonify(result)
 
 
 @app.route('/api/bifurcation')
@@ -286,7 +292,11 @@ def api_bifurcation():
     prior_week = weeks[idx - 1] if idx > 0 else week
     curr = _apply_all_filters(wd[week], request)
     prior = _apply_all_filters(wd[prior_week], request)
-    return jsonify(atb_bifurcation(curr, prior))
+    bifur_result = atb_bifurcation(curr, prior)
+    unbilled = unbilled_analysis(curr, prior)
+    bifur_result['unbilled'] = unbilled
+    bifur_result['summary_points'] = bifurcation_summary(bifur_result, unbilled)
+    return jsonify(bifur_result)
 
 
 @app.route('/api/aging-contributors')
@@ -342,6 +352,69 @@ def api_billing_entities():
     if state['loading']:
         return jsonify({'error': 'Data still loading'}), 503
     return jsonify({'entities': get_billing_entities(state['weekly_data'])})
+
+
+@app.route('/api/unbilled')
+def api_unbilled():
+    client = request.args.get('client')
+    _, state = _resolve_client(client)
+    if isinstance(state, tuple):
+        return state
+    if state['loading']:
+        return jsonify({'error': 'Data still loading'}), 503
+    week = request.args.get('week')
+    wd = state['weekly_data']
+    weeks = state['weeks']
+    if not weeks:
+        return jsonify({'error': 'No data'}), 404
+    if not week or week not in wd:
+        week = weeks[-1]
+    idx = weeks.index(week)
+    prior_week = weeks[idx - 1] if idx > 0 else week
+    curr = _apply_all_filters(wd[week], request)
+    prior = _apply_all_filters(wd[prior_week], request)
+    return jsonify(unbilled_analysis(curr, prior))
+
+
+@app.route('/api/balance-groups')
+def api_balance_groups():
+    client = request.args.get('client')
+    _, state = _resolve_client(client)
+    if isinstance(state, tuple):
+        return state
+    if state['loading']:
+        return jsonify({'error': 'Data still loading'}), 503
+    week = request.args.get('week')
+    wd = state['weekly_data']
+    weeks = state['weeks']
+    if not weeks:
+        return jsonify({'error': 'No data'}), 404
+    if not week or week not in wd:
+        week = weeks[-1]
+    idx = weeks.index(week)
+    prior_week = weeks[idx - 1] if idx > 0 else week
+    curr = _apply_all_filters(wd[week], request)
+    prior = _apply_all_filters(wd[prior_week], request)
+    return jsonify(balance_group_breakdown(curr, prior))
+
+
+@app.route('/api/aging-velocity')
+def api_aging_velocity():
+    client = request.args.get('client')
+    _, state = _resolve_client(client)
+    if isinstance(state, tuple):
+        return state
+    if state['loading']:
+        return jsonify({'error': 'Data still loading'}), 503
+    week = request.args.get('week')
+    wd = state['weekly_data']
+    weeks = state['weeks']
+    if not weeks:
+        return jsonify({'error': 'No data'}), 404
+    if not week or week not in wd:
+        week = weeks[-1]
+    curr = _apply_all_filters(wd[week], request)
+    return jsonify(aging_velocity(curr))
 
 
 # Keep old /api/medicare/* paths as aliases so cached bookmarks still work
