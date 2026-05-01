@@ -156,6 +156,7 @@
           <button class="tab-btn" data-tab="rollover" onclick="switchTab('rollover')">Aging Rollover</button>
           <button class="tab-btn" data-tab="bifurcation" onclick="switchTab('bifurcation')">ATB Bifurcation</button>
           <button class="tab-btn" data-tab="contributors" onclick="switchTab('contributors')">90+ Contributors</button>
+          <button class="tab-btn" data-tab="denials" onclick="switchTab('denials')">Open Denials</button>
         </div>
 
         <!-- ── TAB 1: VOLUME TRENDING ─────────────────────── -->
@@ -610,6 +611,217 @@
           </div>
 
         </div><!-- /tab-contributors -->
+
+        <!-- ── TAB 5: OPEN DENIALS ─────────────────────────── -->
+        <div class="tab-pane" id="tab-denials" style="display:none">
+
+          <!-- Controls -->
+          <div class="controls-bar">
+            <div class="ctrl-group">
+              <span class="ctrl-label">Select Week:</span>
+              <select class="ctrl-select" id="sel-denials-week" onchange="loadDenials()"></select>
+            </div>
+            <div class="ctrl-group">
+              <span class="ctrl-label">Health Plans:</span>
+              <select class="ctrl-select" id="sel-denials-topn" onchange="loadDenials()">
+                <option value="10">Top 10</option>
+                <option value="15" selected>Top 15</option>
+                <option value="20">Top 20</option>
+                <option value="999">All</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Key Insights Panel -->
+          <div class="key-points-panel" id="denial-summary-panel" style="display:none">
+            <div class="kp-title">&#9888; Open Denial Insights</div>
+            <div id="denial-summary-list"></div>
+          </div>
+
+          <!-- Unavailable message -->
+          <div id="denial-unavailable" style="display:none;padding:40px;text-align:center;color:#64748b">
+            <div style="font-size:32px;margin-bottom:12px">🚫</div>
+            <div style="font-size:15px;font-weight:600;color:#94a3b8">No Denial Data Available</div>
+            <div style="font-size:12px;margin-top:8px">The selected ATB file does not contain a "Last Denial Code" column.<br>This analysis requires Last Denial Code, Last Denial Reason, Last Denial Date, and Last Denial Group columns.</div>
+          </div>
+
+          <!-- Denial content (hidden until data loads) -->
+          <div id="denial-content">
+
+            <!-- KPI Grid (6 cards) -->
+            <div class="kpi-grid" style="grid-template-columns:repeat(6,1fr);margin-bottom:20px" id="denial-kpi-grid">
+              <div class="kpi-card">
+                <div class="kpi-label">Total Denied Balance</div>
+                <div class="kpi-value" id="dn-total-bal">—</div>
+                <div class="kpi-delta neutral" id="dn-total-bal-delta">vs prior week</div>
+              </div>
+              <div class="kpi-card">
+                <div class="kpi-label">Denied Encounters</div>
+                <div class="kpi-value" id="dn-total-cnt">—</div>
+                <div class="kpi-delta neutral" id="dn-total-cnt-delta">vs prior week</div>
+              </div>
+              <div class="kpi-card">
+                <div class="kpi-label">% of ATB Balance</div>
+                <div class="kpi-value" id="dn-pct-atb">—</div>
+                <div class="kpi-delta neutral">open denial share</div>
+              </div>
+              <div class="kpi-card">
+                <div class="kpi-label">Avg Balance / Denial</div>
+                <div class="kpi-value" id="dn-avg-bal">—</div>
+                <div class="kpi-delta neutral">per encounter</div>
+              </div>
+              <div class="kpi-card" style="border-color:rgba(239,68,68,0.4)">
+                <div class="kpi-label">New Denials This Week</div>
+                <div class="kpi-value" style="color:#ef4444" id="dn-new-cnt">—</div>
+                <div class="kpi-delta neutral" id="dn-new-bal">balance</div>
+              </div>
+              <div class="kpi-card" style="border-color:rgba(34,197,94,0.4)">
+                <div class="kpi-label">Resolved This Week</div>
+                <div class="kpi-value" style="color:#22c55e" id="dn-res-cnt">—</div>
+                <div class="kpi-delta neutral" id="dn-res-bal">balance cleared</div>
+              </div>
+            </div>
+
+            <!-- Resolution Summary Cards -->
+            <div class="denial-resolution-grid">
+              <div class="denial-res-card new-card">
+                <div class="denial-res-label">&#9650; New Denials Added</div>
+                <div class="denial-res-value new-val" id="res-new-val">—</div>
+                <div class="denial-res-sub" id="res-new-sub">encounters / balance</div>
+              </div>
+              <div class="denial-res-card resolved-card">
+                <div class="denial-res-label">&#9660; Denials Resolved / Cleared</div>
+                <div class="denial-res-value resolved-val" id="res-resolved-val">—</div>
+                <div class="denial-res-sub" id="res-resolved-sub">encounters / balance</div>
+              </div>
+              <div class="denial-res-card continued-card">
+                <div class="denial-res-label">&#8594; Continued Open Denials</div>
+                <div class="denial-res-value continued-val" id="res-continued-val">—</div>
+                <div class="denial-res-sub" id="res-continued-sub">carried from prior week</div>
+              </div>
+            </div>
+
+            <!-- Pareto Chart + Denial Group Donut -->
+            <div style="display:grid;grid-template-columns:1.8fr 1fr;gap:20px;margin-bottom:20px">
+              <div class="chart-card" style="margin-bottom:0">
+                <div class="chart-card-header">
+                  <div>
+                    <div class="chart-card-title">Denial Code Pareto — Top Codes by Balance</div>
+                    <div class="chart-card-sub">Bars = balance by denial code &nbsp;|&nbsp; Line = cumulative % &nbsp;|&nbsp; Dashed = 90% threshold</div>
+                  </div>
+                </div>
+                <div class="chart-wrap" style="height:300px">
+                  <canvas id="denial-pareto-chart"></canvas>
+                </div>
+              </div>
+              <div class="chart-card" style="margin-bottom:0">
+                <div class="chart-card-header">
+                  <div class="chart-card-title">Denial Distribution by Group</div>
+                </div>
+                <div class="chart-wrap" style="height:300px" id="denial-group-chart-wrap">
+                  <canvas id="denial-group-chart"></canvas>
+                </div>
+              </div>
+            </div>
+
+            <!-- Health Plan Denial Bars -->
+            <div class="chart-card" style="margin-bottom:20px">
+              <div class="chart-card-header">
+                <div>
+                  <div class="chart-card-title">Health Plan Denial Ranking — Balance &amp; WoW Change</div>
+                  <div class="chart-card-sub">Excludes Self Pay &nbsp;|&nbsp; Red = increased vs prior week, Green = decreased &nbsp;|&nbsp; Top <span id="denials-topn-label">15</span> plans</div>
+                </div>
+              </div>
+              <div id="denial-hp-wrap" style="overflow-x:auto"></div>
+            </div>
+
+            <!-- Denial Age Distribution -->
+            <div class="chart-card" style="margin-bottom:20px" id="denial-age-panel">
+              <div class="chart-card-header">
+                <div>
+                  <div class="chart-card-title">Denial Age Analysis — Days Since Last Denial Date</div>
+                  <div class="chart-card-sub">How long denials have been open based on Last Denial Date</div>
+                </div>
+              </div>
+              <div class="data-table-wrap">
+                <table class="data-table" id="denial-age-table">
+                  <thead>
+                    <tr>
+                      <th>Age Bucket</th>
+                      <th>Encounters</th>
+                      <th>Denied Balance</th>
+                      <th>% of Denials</th>
+                      <th>Avg Age (Days)</th>
+                    </tr>
+                  </thead>
+                  <tbody><tr><td colspan="5" style="text-align:center;color:#64748b;padding:20px">Select a week to load.</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Denial Code Detail Table -->
+            <div class="section-divider">Denial Code Detail — Pareto Breakdown</div>
+            <div class="chart-card" style="margin-bottom:20px">
+              <div class="chart-card-header">
+                <div>
+                  <div class="chart-card-title">By Last Denial Code &amp; Reason</div>
+                  <div class="chart-card-sub" style="color:#ef4444">
+                    <span class="pareto-90-label">TOP 90%</span> highlighted rows = codes driving 90% of denial balance
+                  </div>
+                </div>
+              </div>
+              <div class="data-table-wrap">
+                <table class="data-table" id="denial-code-table">
+                  <thead>
+                    <tr>
+                      <th>Denial Code</th>
+                      <th>Reason</th>
+                      <th>Group</th>
+                      <th>Encounters</th>
+                      <th>Denied Balance</th>
+                      <th>% of Denials</th>
+                      <th>Cumulative %</th>
+                      <th>Prior Balance</th>
+                      <th>&Delta; Balance</th>
+                    </tr>
+                  </thead>
+                  <tbody><tr><td colspan="9" style="text-align:center;color:#64748b;padding:20px">Select a week to load.</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Health Plan Detail Table -->
+            <div class="section-divider">Health Plan Denial Detail</div>
+            <div class="chart-card">
+              <div class="chart-card-header">
+                <div>
+                  <div class="chart-card-title">By Responsible Health Plan (excl. Self Pay)</div>
+                  <div class="chart-card-sub">Includes denial group breakdown per plan</div>
+                </div>
+              </div>
+              <div class="data-table-wrap">
+                <table class="data-table" id="denial-hp-table">
+                  <thead>
+                    <tr>
+                      <th>Health Plan</th>
+                      <th>Encounters</th>
+                      <th>Denied Balance</th>
+                      <th>% of Denials</th>
+                      <th>Cumulative %</th>
+                      <th>Prior Balance</th>
+                      <th>&Delta; Balance</th>
+                      <th>&Delta; %</th>
+                      <th>Top Denial Group</th>
+                    </tr>
+                  </thead>
+                  <tbody><tr><td colspan="9" style="text-align:center;color:#64748b;padding:20px">Select a week to load.</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+
+          </div><!-- /denial-content -->
+
+        </div><!-- /tab-denials -->
 
       </div><!-- /section-medicare -->
 

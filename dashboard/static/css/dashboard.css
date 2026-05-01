@@ -721,6 +721,46 @@ body { font-family: 'Inter', 'Segoe UI', sans-serif; background: var(--bg-dark);
 .rhp-delta.up { color: var(--danger); text-align: right; }
 .rhp-delta.down { color: var(--success); text-align: right; }
 
+/* ── DENIAL TAB ─────────────────────────────────── */
+.denial-resolution-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  margin-bottom: 20px;
+}
+.denial-res-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 18px;
+  text-align: center;
+}
+.denial-res-card.new-card   { border-color: rgba(239,68,68,0.5); }
+.denial-res-card.resolved-card { border-color: rgba(34,197,94,0.5); }
+.denial-res-card.continued-card { border-color: rgba(14,165,233,0.4); }
+.denial-res-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; }
+.denial-res-value { font-size: 22px; font-weight: 700; color: var(--text-primary); }
+.denial-res-value.new-val { color: var(--danger); }
+.denial-res-value.resolved-val { color: var(--success); }
+.denial-res-value.continued-val { color: var(--accent); }
+.denial-res-sub { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+
+.pareto-90-label {
+  display: inline-block;
+  background: rgba(239,68,68,0.15);
+  color: var(--danger);
+  border: 1px solid rgba(239,68,68,0.4);
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+.top90-row { background: rgba(239,68,68,0.06) !important; }
+.denial-age-critical { color: var(--danger); font-weight: 600; }
+.denial-age-warning  { color: var(--warning); font-weight: 600; }
+
 /* ── RESPONSIVE ─────────────────────────────────── */
 @media (max-width: 1100px) {
   .kpi-grid { grid-template-columns: repeat(2, 1fr); }

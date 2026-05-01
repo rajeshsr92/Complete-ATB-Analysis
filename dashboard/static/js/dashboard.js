@@ -6,6 +6,8 @@ const API = '';
 let trendChart = null;
 let bifurBarChart = null;
 let bifurDonutChart = null;
+let denialParetoChart = null;
+let denialGroupChart = null;
 let allWeeks = [];
 let currentClient = '';
 let highDollarMode = false;
@@ -253,6 +255,7 @@ function switchTab(id) {
   if (id === 'rollover') loadRollover();
   if (id === 'bifurcation') loadBifurcation();
   if (id === 'contributors') loadContributors();
+  if (id === 'denials') loadDenials();
 }
 
 function switchSection(id) {
@@ -383,7 +386,7 @@ function loadPayerInfo() {
 }
 
 function populateWeekSelectors() {
-  ['sel-from-week', 'sel-to-week', 'sel-bifur-week', 'sel-contrib-week'].forEach(id => {
+  ['sel-from-week', 'sel-to-week', 'sel-bifur-week', 'sel-contrib-week', 'sel-denials-week'].forEach(id => {
     const el = document.getElementById(id);
     if (!el) return;
     el.innerHTML = '';
@@ -404,6 +407,8 @@ function populateWeekSelectors() {
   if (selTo && allWeeks.length >= 1) selTo.value = allWeeks[allWeeks.length - 1];
   if (selBifur && allWeeks.length >= 1) selBifur.value = allWeeks[allWeeks.length - 1];
   if (selContrib && allWeeks.length >= 1) selContrib.value = allWeeks[allWeeks.length - 1];
+  const selDenials = document.getElementById('sel-denials-week');
+  if (selDenials && allWeeks.length >= 1) selDenials.value = allWeeks[allWeeks.length - 1];
 }
 
 // ── SHARED: TAB SUMMARY PANEL ────────────────────────────────
@@ -1204,6 +1209,349 @@ function renderContribTable(tableId, rows) {
     `;
     tbody.appendChild(tr);
   });
+}
+
+// ── TAB 5: OPEN DENIALS ──────────────────────────────────────
+function loadDenials() {
+  const week = document.getElementById('sel-denials-week')?.value;
+  const topN = parseInt(document.getElementById('sel-denials-topn')?.value || 15);
+  if (!week) return;
+
+  const content   = document.getElementById('denial-content');
+  const unavail   = document.getElementById('denial-unavailable');
+  const summPanel = document.getElementById('denial-summary-panel');
+  if (content)   content.style.display = 'none';
+  if (unavail)   unavail.style.display = 'none';
+  if (summPanel) summPanel.style.display = 'none';
+
+  fetch(apiUrl('/api/denials', `week=${week}`))
+    .then(r => r.json())
+    .then(data => {
+      if (!data || data.error) return;
+      if (!data.available) {
+        if (unavail) unavail.style.display = '';
+        return;
+      }
+      if (content) content.style.display = '';
+      renderTabSummary('denial-summary-list', data.summary_points || []);
+      renderDenialKpis(data);
+      renderDenialResolution(data.resolution || {});
+      renderDenialParetoChart(data.by_code || []);
+      renderDenialGroupDonut(data.by_group || []);
+      renderDenialHpBars(data.by_health_plan || [], topN);
+      renderDenialAgeTable(data.by_denial_age || [], data.has_date);
+      renderDenialCodeTable(data.by_code || [], data.has_reason, data.has_group);
+      renderDenialHpTable(data.by_health_plan || [], topN);
+      const lbl = document.getElementById('denials-topn-label');
+      if (lbl) lbl.textContent = topN;
+    })
+    .catch(() => {});
+}
+
+function renderDenialKpis(data) {
+  const k = data.kpis || {};
+  const r = data.resolution || {};
+
+  const setEl = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+  const setHtml = (id, val) => { const el = document.getElementById(id); if (el) el.innerHTML = val; };
+  const setClass = (id, cls) => { const el = document.getElementById(id); if (el) el.className = 'kpi-delta ' + cls; };
+
+  setEl('dn-total-bal', fmtDollar(k.denied_balance));
+  const bd = k.delta_balance, bp = k.delta_pct;
+  const bCls = bd > 0 ? 'up' : bd < 0 ? 'down' : 'neutral';
+  setHtml('dn-total-bal-delta', bd != null
+    ? `${bd > 0 ? '▲' : '▼'} ${fmtDollar(bd)} (${fmtPct(bp)}) vs prior` : 'vs prior week');
+  setClass('dn-total-bal-delta', bCls);
+
+  setEl('dn-total-cnt', fmtNum(k.denied_count));
+  const cd = k.delta_count;
+  const cCls = cd > 0 ? 'up' : cd < 0 ? 'down' : 'neutral';
+  setHtml('dn-total-cnt-delta', cd != null
+    ? `${cd > 0 ? '▲ +' : '▼ '}${fmtNum(cd)} vs prior` : 'vs prior week');
+  setClass('dn-total-cnt-delta', cCls);
+
+  setEl('dn-pct-atb',  k.pct_of_atb  != null ? k.pct_of_atb + '%' : '—');
+  setEl('dn-avg-bal',  fmtDollar(k.avg_balance));
+  setEl('dn-new-cnt',  fmtNum(r.new_count));
+  setEl('dn-new-bal',  fmtDollar(r.new_balance));
+  setEl('dn-res-cnt',  fmtNum(r.resolved_count));
+  setEl('dn-res-bal',  fmtDollar(r.resolved_balance));
+}
+
+function renderDenialResolution(r) {
+  const setEl  = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  const setHtml = (id, v) => { const el = document.getElementById(id); if (el) el.innerHTML = v; };
+  setEl('res-new-val',      fmtDollar(r.new_balance));
+  setEl('res-new-sub',      `${fmtNum(r.new_count)} encounters`);
+  setEl('res-resolved-val', fmtDollar(r.resolved_balance));
+  setEl('res-resolved-sub', `${fmtNum(r.resolved_count)} encounters cleared`);
+  setEl('res-continued-val', fmtDollar(r.continued_balance));
+  setEl('res-continued-sub', `${fmtNum(r.continued_count)} still open from prior week`);
+}
+
+function renderDenialParetoChart(by_code) {
+  const ctx = document.getElementById('denial-pareto-chart');
+  if (!ctx) return;
+  if (denialParetoChart) denialParetoChart.destroy();
+
+  // Show top 20 codes for readability
+  const rows   = by_code.slice(0, 20);
+  const labels = rows.map(r => r.code + (r.group && r.group !== 'nan' ? ` [${r.group}]` : ''));
+  const balances = rows.map(r => r.balance);
+  const cumPcts  = rows.map(r => r.cumulative_pct);
+  const refLine  = rows.map(() => 90);
+
+  denialParetoChart = new Chart(ctx, {
+    data: {
+      labels,
+      datasets: [
+        {
+          type: 'bar',
+          label: 'Denied Balance',
+          data: balances,
+          backgroundColor: rows.map(r => r.is_top90
+            ? 'rgba(239,68,68,0.65)' : 'rgba(100,116,139,0.45)'),
+          borderColor: rows.map(r => r.is_top90 ? '#ef4444' : '#64748b'),
+          borderWidth: 1,
+          borderRadius: 3,
+          yAxisID: 'y1',
+          order: 2,
+        },
+        {
+          type: 'line',
+          label: 'Cumulative %',
+          data: cumPcts,
+          borderColor: '#0ea5e9',
+          backgroundColor: 'transparent',
+          pointBackgroundColor: '#0ea5e9',
+          pointRadius: 4,
+          tension: 0.2,
+          fill: false,
+          yAxisID: 'yPct',
+          order: 1,
+        },
+        {
+          type: 'line',
+          label: '90% Threshold',
+          data: refLine,
+          borderColor: '#f59e0b',
+          borderDash: [6, 4],
+          borderWidth: 2,
+          pointRadius: 0,
+          fill: false,
+          yAxisID: 'yPct',
+          order: 0,
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { labels: { color: '#94a3b8', font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            label: c => {
+              if (c.dataset.yAxisID === 'y1')   return ` ${c.dataset.label}: ${fmtDollar(c.parsed.y)}`;
+              if (c.dataset.label === '90% Threshold') return null;
+              return ` ${c.dataset.label}: ${c.parsed.y}%`;
+            }
+          }
+        }
+      },
+      scales: {
+        x: { ticks: { color: '#94a3b8', maxRotation: 50, font: { size: 10 } }, grid: { color: 'rgba(30,58,95,0.4)' } },
+        y1: {
+          type: 'linear', position: 'left',
+          ticks: { color: '#ef4444', callback: v => fmtDollar(v) },
+          grid: { color: 'rgba(30,58,95,0.4)' }
+        },
+        yPct: {
+          type: 'linear', position: 'right',
+          min: 0, max: 105,
+          ticks: { color: '#0ea5e9', callback: v => v + '%' },
+          grid: { drawOnChartArea: false }
+        }
+      }
+    }
+  });
+}
+
+function renderDenialGroupDonut(by_group) {
+  const wrap = document.getElementById('denial-group-chart-wrap');
+  const ctx  = document.getElementById('denial-group-chart');
+  if (!ctx) return;
+  if (denialGroupChart) denialGroupChart.destroy();
+
+  if (!by_group.length) {
+    if (wrap) wrap.innerHTML = '<p style="color:#64748b;padding:40px;text-align:center;font-size:12px">No denial group data available.<br>Requires "Last Denial Group" column.</p>';
+    return;
+  }
+
+  denialGroupChart = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: by_group.map(r => r.name),
+      datasets: [{
+        data: by_group.map(r => r.balance),
+        backgroundColor: BUCKET_PALETTE.slice(0, by_group.length),
+        borderColor: '#0d1b2a',
+        borderWidth: 2,
+        hoverOffset: 6,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      cutout: '55%',
+      plugins: {
+        legend: {
+          position: 'bottom',
+          labels: { color: '#94a3b8', font: { size: 10 }, padding: 8, boxWidth: 10 }
+        },
+        tooltip: {
+          callbacks: {
+            label: c => {
+              const total = by_group.reduce((s, r) => s + r.balance, 0);
+              const pct   = total ? (c.parsed / total * 100).toFixed(1) : 0;
+              return ` ${fmtDollar(c.parsed)} (${pct}%)`;
+            }
+          }
+        }
+      }
+    }
+  });
+}
+
+function renderDenialHpBars(rows, topN) {
+  const wrap = document.getElementById('denial-hp-wrap');
+  if (!wrap) return;
+  const visible = rows.slice(0, topN);
+  if (!visible.length) { wrap.innerHTML = '<p style="color:#64748b;padding:20px">No health plan denial data.</p>'; return; }
+
+  const maxBal   = Math.max(...visible.map(r => r.balance), 1);
+  const maxDelta = Math.max(...visible.map(r => Math.abs(r.delta_balance)), 1);
+
+  let html = `<table class="rhp-bar-table">
+    <thead style="font-size:10px;color:#64748b;text-transform:uppercase">
+      <tr>
+        <td style="width:180px">Health Plan</td>
+        <td>Denied Balance</td>
+        <td>% of Denials</td>
+        <td style="width:200px">Balance Bar</td>
+        <td>WoW &Delta;</td>
+        <td>WoW %</td>
+        <td>Top Denial Group</td>
+      </tr>
+    </thead><tbody>`;
+
+  visible.forEach(r => {
+    const barW  = Math.max(4, Math.round(r.balance / maxBal * 150));
+    const dCls  = r.delta_balance > 0 ? 'up' : 'down';
+    const dBarW = Math.max(4, Math.round(Math.abs(r.delta_balance) / maxDelta * 60));
+    const topGrp = r.by_group && r.by_group.length ? r.by_group[0].group : '—';
+    html += `<tr>
+      <td class="rhp-name" title="${r.name}">${r.name}</td>
+      <td class="rhp-curr">${fmtDollar(r.balance)}</td>
+      <td style="color:#94a3b8;text-align:right">${r.pct_of_denied != null ? r.pct_of_denied + '%' : '—'}</td>
+      <td><div style="display:flex;align-items:center;gap:4px">
+        <div class="rhp-bar ${dCls}" style="width:${barW}px"></div>
+        <div class="rhp-bar ${dCls}" style="width:${dBarW}px;opacity:0.35"></div>
+      </div></td>
+      <td class="rhp-delta ${dCls}">${fmtDollar(r.delta_balance)}</td>
+      <td class="rhp-delta ${dCls}">${r.delta_pct != null ? fmtPct(r.delta_pct) : '—'}</td>
+      <td style="color:#94a3b8;font-size:11px">${topGrp}</td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  wrap.innerHTML = html;
+}
+
+function renderDenialAgeTable(rows, hasDate) {
+  const panel = document.getElementById('denial-age-panel');
+  const tbody = document.querySelector('#denial-age-table tbody');
+  if (!tbody) return;
+  if (!hasDate || !rows.length) {
+    if (panel) panel.style.display = 'none';
+    return;
+  }
+  if (panel) panel.style.display = '';
+
+  tbody.innerHTML = '';
+  rows.forEach(r => {
+    const isCritical = ['90-119 days', '120-179 days', '180+ days'].includes(r.bucket);
+    const isWarning  = r.bucket === '60-89 days';
+    const cls        = isCritical ? 'denial-age-critical' : isWarning ? 'denial-age-warning' : '';
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="${cls}">${r.bucket}</td>
+      <td>${fmtNum(r.count)}</td>
+      <td class="${cls}">${fmtDollar(r.balance)}</td>
+      <td>${r.pct_of_denied != null ? r.pct_of_denied + '%' : '—'}</td>
+      <td class="${cls}">${r.avg_age_days != null ? r.avg_age_days + ' d' : '—'}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function renderDenialCodeTable(rows, hasReason, hasGroup) {
+  const tbody = document.querySelector('#denial-code-table tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  rows.forEach(r => {
+    const dCls = r.delta_balance > 0 ? 'up' : r.delta_balance < 0 ? 'down' : 'neutral';
+    const tr   = document.createElement('tr');
+    if (r.is_top90) tr.className = 'top90-row';
+    tr.innerHTML = `
+      <td>
+        ${r.code}
+        ${r.is_top90 ? '<span class="pareto-90-label">TOP 90%</span>' : ''}
+      </td>
+      <td style="font-size:11px;color:#94a3b8">${hasReason && r.reason && r.reason !== 'nan' ? r.reason : '—'}</td>
+      <td style="font-size:11px;color:#64748b">${hasGroup && r.group && r.group !== 'nan' ? r.group : '—'}</td>
+      <td>${fmtNum(r.count)}</td>
+      <td>${fmtDollar(r.balance)}</td>
+      <td>${r.pct_of_denied != null ? r.pct_of_denied + '%' : '—'}</td>
+      <td style="font-weight:600;color:${r.cumulative_pct <= 90 ? '#ef4444' : '#64748b'}">${r.cumulative_pct != null ? r.cumulative_pct + '%' : '—'}</td>
+      <td>${fmtDollar(r.prior_balance)}</td>
+      <td class="${dCls}">${fmtDollar(r.delta_balance)}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#64748b;padding:20px">No denial code data found.</td></tr>';
+  }
+}
+
+function renderDenialHpTable(rows, topN) {
+  const tbody = document.querySelector('#denial-hp-table tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  const visible = rows.slice(0, topN);
+  visible.forEach(r => {
+    const dCls   = r.delta_balance > 0 ? 'up' : r.delta_balance < 0 ? 'down' : 'neutral';
+    const isTop  = r.cumulative_pct <= 90;
+    const topGrp = r.by_group && r.by_group.length
+      ? `${r.by_group[0].group} (${fmtDollar(r.by_group[0].balance)})` : '—';
+    const tr = document.createElement('tr');
+    if (r.delta_balance > 0) tr.className = 'row-alert';
+    tr.innerHTML = `
+      <td>${r.name}</td>
+      <td>${fmtNum(r.count)}</td>
+      <td>${fmtDollar(r.balance)}</td>
+      <td>${r.pct_of_denied != null ? r.pct_of_denied + '%' : '—'}</td>
+      <td style="font-weight:600;color:${isTop ? '#ef4444' : '#64748b'}">${r.cumulative_pct != null ? r.cumulative_pct + '%' : '—'}</td>
+      <td>${fmtDollar(r.prior_balance)}</td>
+      <td class="${dCls}">${fmtDollar(r.delta_balance)}</td>
+      <td class="${dCls}">${r.delta_pct != null ? fmtPct(r.delta_pct) : '—'}</td>
+      <td style="font-size:11px;color:#94a3b8">${topGrp}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+  if (!visible.length) {
+    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#64748b;padding:20px">No health plan denial data.</td></tr>';
+  }
 }
 
 // ── BOOT ─────────────────────────────────────────────────────

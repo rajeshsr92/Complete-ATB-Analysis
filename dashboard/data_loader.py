@@ -44,17 +44,20 @@ NEEDED_COLS = [
 ]
 
 # Optional columns loaded when present in the source file
-OPTIONAL_COLS = ['Billing Entity']
+OPTIONAL_COLS = [
+    'Billing Entity',
+    'Last Denial Code', 'Last Denial Reason', 'Last Denial Date', 'Last Denial Group',
+]
 
 # String columns stored as categoricals to reduce memory usage
 CAT_COLS = [
     'Primary Health Plan', 'Responsible Financial Class', 'Responsible Health Plan',
     'Discharge Aging Category', 'Unbilled Aging Category', 'Balance Group',
-    'Billing Entity'
+    'Billing Entity', 'Last Denial Code', 'Last Denial Reason', 'Last Denial Group',
 ]
 
 # Bump when filter/column logic changes — forces pkl regeneration
-PKL_VERSION = 'v4'
+PKL_VERSION = 'v5'
 
 
 def _data_root():

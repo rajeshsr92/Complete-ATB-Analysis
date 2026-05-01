@@ -36,7 +36,8 @@ from analytics import (wow_trending, trending_summary,
                         aging_migration, rollover_summary,
                         atb_bifurcation, bifurcation_summary,
                         unbilled_analysis, balance_group_breakdown, aging_velocity,
-                        aging_contributors, compute_high_dollar_threshold)
+                        aging_contributors, compute_high_dollar_threshold,
+                        denial_analysis)
 
 app = Flask(__name__)
 
@@ -415,6 +416,28 @@ def api_aging_velocity():
         week = weeks[-1]
     curr = _apply_all_filters(wd[week], request)
     return jsonify(aging_velocity(curr))
+
+
+@app.route('/api/denials')
+def api_denials():
+    client = request.args.get('client')
+    _, state = _resolve_client(client)
+    if isinstance(state, tuple):
+        return state
+    if state['loading']:
+        return jsonify({'error': 'Data still loading'}), 503
+    week = request.args.get('week')
+    wd = state['weekly_data']
+    weeks = state['weeks']
+    if not weeks:
+        return jsonify({'error': 'No data'}), 404
+    if not week or week not in wd:
+        week = weeks[-1]
+    idx = weeks.index(week)
+    prior_week = weeks[idx - 1] if idx > 0 else week
+    curr  = _apply_all_filters(wd[week], request)
+    prior = _apply_all_filters(wd[prior_week], request)
+    return jsonify(denial_analysis(curr, prior))
 
 
 # Keep old /api/medicare/* paths as aliases so cached bookmarks still work
