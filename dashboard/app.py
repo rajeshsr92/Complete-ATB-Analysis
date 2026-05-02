@@ -491,4 +491,5 @@ app.add_url_rule('/api/medicare/bifurcation', view_func=api_bifurcation, endpoin
 if __name__ == '__main__':
     t = threading.Thread(target=_load_all_clients, daemon=True)
     t.start()
-    app.run(debug=False, port=5000, use_reloader=False)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(debug=False, host='0.0.0.0', port=port, use_reloader=False)

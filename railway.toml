@@ -1,0 +1,8 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "cd dashboard && gunicorn --bind 0.0.0.0:$PORT --workers 1 --timeout 120 app:app"
+healthcheckPath = "/"
+healthcheckTimeout = 120
+restartPolicyType = "on_failure"
