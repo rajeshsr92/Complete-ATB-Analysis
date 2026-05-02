@@ -1,5 +1,5 @@
-# Patient data — never commit
-Data/
+# Pickle caches under Data/ — generated at runtime, never commit
+Data/**/*.pkl
 
 # Compiled Python libraries (installed locally, not part of source)
 lib/
