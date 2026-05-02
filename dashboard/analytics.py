@@ -1683,3 +1683,393 @@ def denial_velocity_summary(data: dict) -> list:
         })
 
     return points
+
+
+def cash_collection_action_plan(weekly_data: dict, curr_df: pd.DataFrame, prior_df: pd.DataFrame) -> dict:
+    """Prescriptive cash collection analysis: prioritized actions, waterfall, forecast, and scoring."""
+    import statistics as _stats
+
+    curr = _decat(curr_df)
+
+    _BAL   = 'Balance Amount'
+    _ENC   = 'Encounter Number'
+    _DAC   = 'Discharge Aging Category'
+    _RFC   = 'Responsible Financial Class'
+    _RHP   = 'Responsible Health Plan'
+    _DD    = 'Discharge Date'
+    _RD    = 'REPORT_DATE'
+    _LDD   = 'Last Denial Date'
+    TF_COL = 'Days to Timely Filing Limit'
+
+    deduped  = curr.sort_values(_BAL, ascending=False).drop_duplicates(_ENC)
+    total_ar = float(deduped[_BAL].sum())
+
+    report_dt = None
+    if _RD in deduped.columns:
+        try:
+            report_dt = pd.to_datetime(deduped[_RD], errors='coerce').max()
+        except Exception:
+            pass
+    if report_dt is None or pd.isna(report_dt):
+        report_dt = pd.Timestamp.now()
+
+    denied_ded      = _get_denied_df(deduped)
+    denied_encs_set = set(denied_ded[_ENC].astype(str))
+    has_denial_mask = deduped[_ENC].astype(str).isin(denied_encs_set)
+
+    # ── SECTION 1: URGENCY ALERT ────────────────────────────
+    has_tf = TF_COL in deduped.columns
+    urgency_alert = {'show': False, 'at_risk_count': 0, 'at_risk_balance': 0.0,
+                     'threshold_days': 14, 'column_available': has_tf}
+    if has_tf:
+        try:
+            tf_vals    = pd.to_numeric(deduped[TF_COL], errors='coerce')
+            tf_risk_df = deduped[tf_vals.between(0, 14)]
+            urgency_alert.update({
+                'show': int(tf_risk_df[_ENC].nunique()) > 0,
+                'at_risk_count': int(tf_risk_df[_ENC].nunique()),
+                'at_risk_balance': round(float(tf_risk_df[_BAL].sum()), 2),
+            })
+        except Exception:
+            pass
+
+    # ── SECTION 2: KPIs ─────────────────────────────────────
+    over90_encs_set = set(deduped[deduped[_DAC].isin(OVER_90_BUCKETS)][_ENC].astype(str))
+    recoverable_df  = deduped[deduped[_ENC].astype(str).isin(over90_encs_set | denied_encs_set)]
+    recoverable_bal = float(recoverable_df[_BAL].sum())
+    recoverable_cnt = int(recoverable_df[_ENC].nunique())
+
+    b9120_denied = _get_denied_df(deduped[deduped[_DAC] == '91-120'])
+    if len(b9120_denied) and _LDD in b9120_denied.columns:
+        try:
+            ldd_qw = pd.to_datetime(b9120_denied[_LDD], errors='coerce')
+            da_qw  = (report_dt - ldd_qw).dt.days
+            qw_df  = b9120_denied[da_qw.fillna(9999) < 30]
+        except Exception:
+            qw_df = b9120_denied
+    else:
+        qw_df = b9120_denied
+    quick_win_bal = float(qw_df[_BAL].sum())
+    quick_win_cnt = int(qw_df[_ENC].nunique())
+
+    tf_col_available = has_tf
+    if has_tf:
+        try:
+            tf30_vals      = pd.to_numeric(deduped[TF_COL], errors='coerce')
+            tf_30_df       = deduped[tf30_vals.between(0, 30)]
+            tf_at_risk_bal = float(tf_30_df[_BAL].sum())
+            tf_at_risk_cnt = int(tf_30_df[_ENC].nunique())
+        except Exception:
+            tf_col_available = False
+            tf_est         = deduped[deduped[_DAC].isin(['91-120', '121-150'])]
+            tf_at_risk_bal = float(tf_est[_BAL].sum())
+            tf_at_risk_cnt = int(tf_est[_ENC].nunique())
+    else:
+        tf_est         = deduped[deduped[_DAC].isin(['91-120', '121-150'])]
+        tf_at_risk_bal = float(tf_est[_BAL].sum())
+        tf_at_risk_cnt = int(tf_est[_ENC].nunique())
+
+    sorted_weeks     = sorted(weekly_data.keys())
+    resolution_rates = []
+    for i in range(1, len(sorted_weeks)):
+        try:
+            pw_ded        = _decat(weekly_data[sorted_weeks[i - 1]])
+            pw_ded        = pw_ded.sort_values(_BAL, ascending=False).drop_duplicates(_ENC)
+            cw_ded        = _decat(weekly_data[sorted_weeks[i]])
+            cw_ded        = cw_ded.sort_values(_BAL, ascending=False).drop_duplicates(_ENC)
+            prev_denied_w = _get_denied_df(pw_ded)
+            curr_denied_w = _get_denied_df(cw_ded)
+            prev_bal_w    = float(prev_denied_w[_BAL].sum())
+            if prev_bal_w > 0:
+                curr_encs_w = set(curr_denied_w[_ENC].astype(str))
+                resolved_w  = prev_denied_w[~prev_denied_w[_ENC].astype(str).isin(curr_encs_w)]
+                rate = max(0.0, min(1.0, float(resolved_w[_BAL].sum()) / prev_bal_w))
+                resolution_rates.append(rate)
+        except Exception:
+            continue
+
+    avg_rate     = float(sum(resolution_rates[-8:])) / len(resolution_rates[-8:]) if resolution_rates else 0.05
+    denied_pool  = float(denied_ded[_BAL].sum())
+    projected_4wk = round(denied_pool * (1 - (1 - avg_rate) ** 4), 2)
+
+    kpis = {
+        'recoverable_opportunity': round(recoverable_bal, 2),
+        'recoverable_count': recoverable_cnt,
+        'quick_win_balance': round(quick_win_bal, 2),
+        'quick_win_count': quick_win_cnt,
+        'tf_at_risk_balance': round(tf_at_risk_bal, 2),
+        'tf_at_risk_count': tf_at_risk_cnt,
+        'tf_column_available': tf_col_available,
+        'projected_4wk_recovery': projected_4wk,
+        'avg_weekly_resolution_rate': round(avg_rate * 100, 1),
+    }
+
+    # ── SECTION 3: PRIORITY SCORE TABLE ─────────────────────
+    raw_rows = []
+    for (payer, fin_class), g in deduped.groupby([_RHP, _RFC], sort=False):
+        bal = float(g[_BAL].sum())
+        if bal <= 0:
+            continue
+        enc_count = int(g[_ENC].nunique())
+        if _DD in g.columns:
+            dd_g = pd.to_datetime(g[_DD], errors='coerce')
+            ard  = (report_dt - dd_g).dt.days.dropna()
+            avg_ar = round(float(ard.mean()), 0) if len(ard) else None
+        else:
+            avg_ar = None
+        denied_g = _get_denied_df(g)
+        if len(denied_g) and _LDD in denied_g.columns:
+            ldd_g  = pd.to_datetime(denied_g[_LDD], errors='coerce')
+            da_g   = (report_dt - ldd_g).dt.days.dropna()
+            avg_da = round(float(da_g.mean()), 0) if len(da_g) else None
+        else:
+            avg_da = None
+        if has_tf:
+            try:
+                tf_g  = pd.to_numeric(g[TF_COL], errors='coerce').dropna()
+                avg_tf = float(tf_g.mean()) if len(tf_g) else 90.0
+            except Exception:
+                avg_tf = 90.0
+        else:
+            bucket_tf_map = {'0-30': 150, '31-60': 120, '61-90': 90, '91-120': 60,
+                             '121-150': 30, '151-180': 15, 'DNFB': 180, 'Not Aged': 180}
+            dom_bucket = None
+            if _DAC in g.columns and len(g):
+                dom_bucket = g.groupby(_DAC)[_BAL].sum().idxmax()
+            avg_tf = bucket_tf_map.get(dom_bucket, 90)
+        raw_rows.append({
+            'payer': str(payer), 'fin_class': str(fin_class),
+            'encounter_count': enc_count, 'balance': bal,
+            'avg_ar_days': avg_ar, 'avg_denial_age': avg_da,
+            'avg_tf_remaining': avg_tf,
+            'payer_denial_rate': len(denied_g) / enc_count if enc_count else 0.0,
+        })
+
+    priority_table = []
+    if raw_rows:
+        max_bal  = max(r['balance'] for r in raw_rows) or 1.0
+        max_days = max(r['avg_ar_days'] or 0 for r in raw_rows) or 1.0
+        max_da   = max(r['avg_denial_age'] or 0 for r in raw_rows) or 1.0
+        max_pdr  = max(r['payer_denial_rate'] for r in raw_rows) or 1.0
+        for r in raw_rows:
+            b_score  = r['balance'] / max_bal
+            d_score  = (r['avg_ar_days'] or 0) / max_days
+            tf_rem   = r['avg_tf_remaining']
+            tf_score = max(0.0, 1.0 - tf_rem / 90.0) if tf_rem <= 90 else 0.0
+            da_score = (r['avg_denial_age'] or 0) / max_da
+            pdr_s    = r['payer_denial_rate'] / max_pdr
+            score    = (0.35 * b_score + 0.25 * d_score + 0.20 * tf_score + 0.15 * da_score + 0.05 * pdr_s) * 100
+            if tf_score >= 0.8:
+                action = 'URGENT: File appeal — timely filing deadline near'
+            elif da_score >= 0.7 and b_score >= 0.4:
+                action = 'Escalate to denial specialist — aged denial'
+            elif b_score >= 0.8 and d_score <= 0.3:
+                action = 'Priority billing follow-up — high balance, recent'
+            elif d_score >= 0.7 and da_score <= 0.2:
+                action = 'Chase payment — outstanding, no active denial'
+            elif r['payer_denial_rate'] >= 0.5:
+                action = 'Denial management — high payer denial rate'
+            else:
+                action = 'Standard follow-up and status check'
+            r['priority_score'] = round(score, 1)
+            r['tf_risk_score']  = round(tf_score, 2)
+            r['action']         = action
+        raw_rows.sort(key=lambda r: r['priority_score'], reverse=True)
+        for i, r in enumerate(raw_rows[:20]):
+            priority_table.append({
+                'rank': i + 1,
+                'payer': r['payer'],
+                'fin_class': r['fin_class'],
+                'encounter_count': r['encounter_count'],
+                'balance': round(r['balance'], 2),
+                'avg_ar_days': int(r['avg_ar_days']) if r['avg_ar_days'] is not None else None,
+                'avg_denial_age': int(r['avg_denial_age']) if r['avg_denial_age'] is not None else None,
+                'tf_risk_score': r['tf_risk_score'],
+                'priority_score': r['priority_score'],
+                'recommended_action': r['action'],
+            })
+
+    # ── SECTION 4: PAYER ACTION MATRIX ──────────────────────
+    payer_rows = []
+    for payer, pg in deduped.groupby(_RHP, sort=False):
+        pg_bal = float(pg[_BAL].sum())
+        if pg_bal <= 0:
+            continue
+        pg_enc    = int(pg[_ENC].nunique())
+        pg_denied = _get_denied_df(pg)
+        if len(pg_denied) and _LDD in pg_denied.columns:
+            ldd_p = pd.to_datetime(pg_denied[_LDD], errors='coerce')
+            da_p  = (report_dt - ldd_p).dt.days.dropna()
+            avg_da_p = round(float(da_p.mean()), 1) if len(da_p) else 0.0
+        else:
+            avg_da_p = 0.0
+        payer_rows.append({
+            'name': str(payer), 'x': avg_da_p, 'y': round(pg_bal, 2), 'r': pg_enc,
+            'denial_rate': round(len(pg_denied) / pg_enc if pg_enc else 0.0, 3),
+        })
+    if payer_rows:
+        x_vals = [r['x'] for r in payer_rows]
+        y_vals = [r['y'] for r in payer_rows]
+        mid_x  = _stats.median(x_vals) if len(x_vals) > 1 else (x_vals[0] if x_vals else 30.0)
+        mid_y  = _stats.median(y_vals) if len(y_vals) > 1 else (y_vals[0] / 2 if y_vals else 0.0)
+        if mid_x == 0:
+            mid_x = 30.0
+        for r in payer_rows:
+            if r['x'] < mid_x and r['y'] >= mid_y:
+                r['quadrant'] = 'quick_win'
+            elif r['x'] >= mid_x and r['y'] >= mid_y:
+                r['quadrant'] = 'strategic_focus'
+            elif r['x'] < mid_x:
+                r['quadrant'] = 'monitor'
+            else:
+                r['quadrant'] = 'deprioritize'
+    payer_matrix = sorted(payer_rows, key=lambda r: r['y'], reverse=True)[:30]
+
+    # ── SECTION 5: CASH RECOVERY WATERFALL ──────────────────
+    clean_pipeline = float(deduped[(deduped[_DAC].isin(['0-30', '31-60'])) & ~has_denial_mask][_BAL].sum())
+    dnfb_pool      = float(deduped[deduped[_DAC] == 'DNFB'][_BAL].sum())
+    at_risk_pool   = float(deduped[deduped[_DAC] == '61-90'][_BAL].sum())
+    over90_df      = deduped[deduped[_DAC].isin(OVER_90_BUCKETS)]
+    over90_denied_df   = _get_denied_df(over90_df)
+    over90_denied_encs = set(over90_denied_df[_ENC].astype(str))
+    if len(over90_denied_df) and _LDD in over90_denied_df.columns:
+        ldd_o = pd.to_datetime(over90_denied_df[_LDD], errors='coerce')
+        da_o  = (report_dt - ldd_o).dt.days.fillna(9999)
+        denied_recoverable = float(over90_denied_df[da_o < 90][_BAL].sum())
+        denied_hard        = float(over90_denied_df[da_o >= 90][_BAL].sum())
+    else:
+        denied_recoverable = float(over90_denied_df[_BAL].sum())
+        denied_hard        = 0.0
+    non_denied_90plus = float(over90_df[~over90_df[_ENC].astype(str).isin(over90_denied_encs)][_BAL].sum())
+
+    waterfall = [
+        {'label': 'Total AR Balance',                  'value': round(total_ar, 2),           'type': 'total'},
+        {'label': 'Clean Pipeline (0-60, no denial)',   'value': round(clean_pipeline, 2),     'type': 'deduct'},
+        {'label': 'DNFB (Internal Billing Fix)',        'value': round(dnfb_pool, 2),          'type': 'deduct'},
+        {'label': 'At-Risk Pool (61-90)',               'value': round(at_risk_pool, 2),       'type': 'warning'},
+        {'label': 'Denied & Recoverable (<90d denial)', 'value': round(denied_recoverable, 2), 'type': 'critical'},
+        {'label': 'Denied & Hard (90d+ denial)',        'value': round(denied_hard, 2),        'type': 'danger'},
+        {'label': 'Non-Denied 90+ (Billing/Auth)',      'value': round(non_denied_90plus, 2),  'type': 'danger'},
+    ]
+
+    # ── SECTION 6: 8-WEEK FORECAST ──────────────────────────
+    accelerated_rate = min(avg_rate * 2, 0.40)
+    baseline_weeks, accelerated_weeks = [], []
+    pool_b = pool_a = denied_pool
+    cum_b  = cum_a  = 0.0
+    for wn in range(1, 9):
+        rec_b = pool_b * avg_rate;      pool_b -= rec_b;  cum_b += rec_b
+        rec_a = pool_a * accelerated_rate; pool_a -= rec_a; cum_a += rec_a
+        baseline_weeks.append({'week': wn, 'cumulative_recovered': round(cum_b, 2), 'remaining': round(pool_b, 2)})
+        accelerated_weeks.append({'week': wn, 'cumulative_recovered': round(cum_a, 2), 'remaining': round(pool_a, 2)})
+
+    forecast = {
+        'avg_weekly_rate': round(avg_rate, 4),
+        'accelerated_rate': round(accelerated_rate, 4),
+        'current_outstanding': round(denied_pool, 2),
+        'baseline_8wk_recovery': baseline_weeks[-1]['cumulative_recovered'] if baseline_weeks else 0.0,
+        'accelerated_8wk_recovery': accelerated_weeks[-1]['cumulative_recovered'] if accelerated_weeks else 0.0,
+        'weeks_of_data_used': len(resolution_rates),
+        'baseline_weeks': baseline_weeks,
+        'accelerated_weeks': accelerated_weeks,
+    }
+
+    # ── SECTION 7: FINANCIAL CLASS RANKINGS ─────────────────
+    fc_rankings = []
+    for fc, fg in deduped.groupby(_RFC, sort=False):
+        fc_bal = float(fg[_BAL].sum())
+        if fc_bal <= 0:
+            continue
+        over90_fc   = float(fg[fg[_DAC].isin(OVER_90_BUCKETS)][_BAL].sum())
+        pct_over_90 = round(_safe_pct(over90_fc, fc_bal) or 0.0, 1)
+        denied_fg   = _get_denied_df(fg)
+        fc_enc      = int(fg[_ENC].nunique())
+        denial_rate = round(_safe_pct(int(denied_fg[_ENC].nunique()), fc_enc) or 0.0, 1)
+        if _DD in fg.columns:
+            dd_fc  = pd.to_datetime(fg[_DD], errors='coerce')
+            ard_fc = (report_dt - dd_fc).dt.days.dropna()
+            avg_vel = int(ard_fc.mean()) if len(ard_fc) else None
+        else:
+            avg_vel = None
+        if pct_over_90 >= 60 and denial_rate >= 30:
+            priority = 'CRITICAL'
+        elif pct_over_90 >= 40 or denial_rate >= 40:
+            priority = 'HIGH'
+        elif pct_over_90 >= 20 or denial_rate >= 20:
+            priority = 'MEDIUM'
+        else:
+            priority = 'MONITOR'
+        fc_rankings.append({
+            'name': str(fc), 'total_balance': round(fc_bal, 2),
+            'pct_over_90': pct_over_90, 'avg_denial_rate': denial_rate,
+            'avg_collection_velocity': avg_vel, 'action_priority': priority,
+        })
+    fc_rankings.sort(key=lambda r: r['total_balance'], reverse=True)
+
+    # ── SECTION 8: KEY ACTION INSIGHTS ──────────────────────
+    insights = []
+    total_90_denied = denied_recoverable + denied_hard
+    if total_90_denied > 0:
+        top_payers_90d = (_get_denied_df(over90_df).groupby(_RHP)[_BAL].sum().sort_values(ascending=False))
+        top3_pct = round(float(top_payers_90d.head(3).sum()) / total_90_denied * 100, 0)
+        insights.append({'type': 'danger',
+            'text': f'{_fmt_dollar(total_90_denied)} locked in 90+ DENIED claims — '
+                    f'top 3 payers account for {top3_pct:.0f}% of this. Escalate immediately.'})
+    if at_risk_pool > 0:
+        cnt_61_90 = int(deduped[deduped[_DAC] == '61-90'][_ENC].nunique())
+        insights.append({'type': 'warning',
+            'text': f'{cnt_61_90:,} encounters in 61-90 bucket ({_fmt_dollar(at_risk_pool)}) '
+                    f'roll into 90+ next week — intervening now prevents permanent aging.'})
+    if quick_win_bal > 0:
+        insights.append({'type': 'success',
+            'text': f'Quick win: {quick_win_cnt:,} newly denied 91-120d claims worth {_fmt_dollar(quick_win_bal)} '
+                    f'— denial is fresh (<30 days), high reversal probability.'})
+    if payer_matrix:
+        slowest = max(payer_matrix, key=lambda r: r['x'])
+        if slowest['x'] >= 45:
+            insights.append({'type': 'warning',
+                'text': f'Payer "{slowest["name"][:50]}" averages {slowest["x"]:.0f} days from denial to resolution '
+                        f'({_fmt_dollar(slowest["y"])} outstanding) — reassign to a denial specialist.'})
+    if payer_matrix:
+        top5_bal = sum(r['y'] for r in payer_matrix[:5])
+        top5_pct = round(top5_bal / total_ar * 100, 0) if total_ar else 0
+        insights.append({'type': 'info',
+            'text': f'Working top 5 payers by priority covers {top5_pct:.0f}% of total AR '
+                    f'({_fmt_dollar(top5_bal)}) — concentrate team effort here first.'})
+    if urgency_alert['show']:
+        insights.append({'type': 'danger',
+            'text': f'URGENT: {_fmt_dollar(urgency_alert["at_risk_balance"])} in '
+                    f'{urgency_alert["at_risk_count"]:,} encounters faces timely filing deadline '
+                    f'within {urgency_alert["threshold_days"]} days — must file THIS WEEK.'})
+    gap = forecast['accelerated_8wk_recovery'] - forecast['baseline_8wk_recovery']
+    if gap > 0:
+        insights.append({'type': 'success',
+            'text': f'Doubling resolution pace could yield an extra {_fmt_dollar(gap)} over 8 weeks '
+                    f'(total {_fmt_dollar(forecast["accelerated_8wk_recovery"])} vs '
+                    f'current-pace {_fmt_dollar(forecast["baseline_8wk_recovery"])}).'})
+    if dnfb_pool > 0:
+        insights.append({'type': 'info',
+            'text': f'{_fmt_dollar(dnfb_pool)} is in DNFB — internal billing issue, not a payer problem. '
+                    f'Same-day resolution frees this cash immediately.'})
+    crit_fcs = [r for r in fc_rankings if r['action_priority'] == 'CRITICAL']
+    if crit_fcs:
+        c = crit_fcs[0]
+        insights.append({'type': 'danger',
+            'text': f'Financial class "{c["name"][:40]}" is CRITICAL: '
+                    f'{c["pct_over_90"]}% over 90 days, {c["avg_denial_rate"]}% denial rate, '
+                    f'{_fmt_dollar(c["total_balance"])} total balance.'})
+    if denied_hard > 0:
+        insights.append({'type': 'danger',
+            'text': f'{_fmt_dollar(denied_hard)} in denials aged 90+ days — approaching write-off territory. '
+                    f'Immediate escalation required before revenue is permanently lost.'})
+
+    return {
+        'urgency_alert': urgency_alert,
+        'kpis': kpis,
+        'priority_table': priority_table,
+        'payer_matrix': payer_matrix,
+        'waterfall': waterfall,
+        'forecast': forecast,
+        'fin_class_rankings': fc_rankings,
+        'action_insights': insights,
+    }

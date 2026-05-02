@@ -9,6 +9,9 @@ let bifurDonutChart = null;
 let denialParetoChart = null;
 let denialGroupChart = null;
 let dvTrendChart = null;
+let capPayerMatrixChart = null;
+let capWaterfallChart   = null;
+let capForecastChart    = null;
 let allWeeks = [];
 let currentClient = '';
 let highDollarMode = false;
@@ -258,6 +261,7 @@ function switchTab(id) {
   if (id === 'contributors') loadContributors();
   if (id === 'denials') loadDenials();
   if (id === 'denial-velocity') loadDenialVelocity();
+  if (id === 'cash-action') loadCashActionPlan();
 }
 
 function switchSection(id) {
@@ -1821,6 +1825,310 @@ function renderDvAgedTable(rows, hasDate) {
     `;
     tbody.appendChild(tr);
   });
+}
+
+// ══════════════════════════════════════════════════════════════
+// CASH COLLECTION ACTION PLAN TAB
+// ══════════════════════════════════════════════════════════════
+
+function loadCashActionPlan() {
+  const panel = document.getElementById('cap-insights-panel');
+  if (panel) panel.style.display = 'none';
+  fetch(apiUrl('/api/cash-action-plan'))
+    .then(r => r.json())
+    .then(data => {
+      if (!data || data.error) return;
+      renderCapUrgencyBanner(data.urgency_alert || {});
+      renderCapKpis(data.kpis || {});
+      renderCapPriorityTable(data.priority_table || []);
+      renderCapPayerMatrix(data.payer_matrix || []);
+      renderCapWaterfall(data.waterfall || []);
+      renderCapForecast(data.forecast || {});
+      renderCapFinClassRankings(data.fin_class_rankings || []);
+      renderTabSummary('cap-insights-list', data.action_insights || []);
+      if (panel && (data.action_insights || []).length) panel.style.display = '';
+    })
+    .catch(() => {});
+}
+
+function renderCapUrgencyBanner(alert) {
+  const banner = document.getElementById('cap-urgency-banner');
+  const text   = document.getElementById('cap-urgency-text');
+  if (!banner || !text) return;
+  if (!alert.show) { banner.style.display = 'none'; return; }
+  banner.style.display = '';
+  text.innerHTML = `<strong>${fmtDollar(alert.at_risk_balance)} in ${fmtNum(alert.at_risk_count)} encounters must be worked THIS WEEK or lost forever</strong>
+    &nbsp;— timely filing deadline within ${alert.threshold_days} days`;
+}
+
+function renderCapKpis(kpis) {
+  const setCard = (id, val, note) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const v = el.querySelector('.kpi-value');
+    const d = el.querySelector('.kpi-delta');
+    if (v) v.textContent = val;
+    if (d && note !== undefined) d.textContent = note;
+  };
+  setCard('cap-kpi-opportunity', fmtDollar(kpis.recoverable_opportunity),
+    `${fmtNum(kpis.recoverable_count)} encounters (90+ or denied)`);
+  setCard('cap-kpi-quickwin', fmtDollar(kpis.quick_win_balance),
+    `${fmtNum(kpis.quick_win_count)} newly denied 91-120d enc.`);
+  setCard('cap-kpi-tf-risk', fmtDollar(kpis.tf_at_risk_balance));
+  const tfNote = document.getElementById('cap-tf-note');
+  if (tfNote) tfNote.textContent = kpis.tf_column_available
+    ? `${fmtNum(kpis.tf_at_risk_count)} enc. — <30 days to filing limit`
+    : 'Estimated from 91-150d bucket';
+  setCard('cap-kpi-forecast', fmtDollar(kpis.projected_4wk_recovery));
+  const fRate = document.getElementById('cap-forecast-rate');
+  if (fRate) fRate.textContent = kpis.avg_weekly_resolution_rate != null
+    ? `${kpis.avg_weekly_resolution_rate.toFixed(1)}% avg weekly resolution`
+    : 'at current pace';
+}
+
+function renderCapPriorityTable(rows) {
+  const tbody = document.querySelector('#cap-priority-table tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:#64748b;padding:20px">No data available.</td></tr>';
+    return;
+  }
+  rows.forEach(r => {
+    const sc = r.priority_score;
+    const scoreClass = sc >= 70 ? 'score-badge-critical' : sc >= 45 ? 'score-badge-high' : 'score-badge-medium';
+    const scoreColor = sc >= 70 ? '#ef4444' : sc >= 45 ? '#f59e0b' : '#0ea5e9';
+    const tfRisk = r.tf_risk_score != null ? (r.tf_risk_score * 100).toFixed(0) + '%' : '—';
+    const da     = r.avg_denial_age != null ? r.avg_denial_age + 'd' : '—';
+    const daColor = (r.avg_denial_age || 0) >= 90 ? '#ef4444' : '#94a3b8';
+    const tfColor = (r.tf_risk_score || 0) >= 0.7 ? '#f59e0b' : '#64748b';
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td style="text-align:center;font-weight:700;color:${scoreColor}">${r.rank}</td>
+      <td style="font-weight:500;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${r.payer}">${r.payer}</td>
+      <td style="color:#94a3b8;font-size:11px">${r.fin_class}</td>
+      <td style="text-align:right">${fmtNum(r.encounter_count)}</td>
+      <td style="text-align:right;font-weight:600">${fmtDollar(r.balance)}</td>
+      <td style="text-align:right">${r.avg_ar_days != null ? r.avg_ar_days + 'd' : '—'}</td>
+      <td style="text-align:right;color:${daColor}">${da}</td>
+      <td style="text-align:right;color:${tfColor}">${tfRisk}</td>
+      <td style="text-align:center"><span class="priority-score-badge ${scoreClass}">${sc.toFixed(1)}</span></td>
+      <td style="font-size:11px;color:#94a3b8;max-width:200px;white-space:normal">${r.recommended_action}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function renderCapPayerMatrix(rows) {
+  const ctx = document.getElementById('cap-payer-matrix-chart');
+  if (!ctx) return;
+  if (capPayerMatrixChart) { capPayerMatrixChart.destroy(); capPayerMatrixChart = null; }
+  if (!rows.length) {
+    ctx.parentElement.innerHTML = '<p style="color:#64748b;padding:40px;text-align:center">No payer matrix data.</p>';
+    return;
+  }
+  const maxR = Math.max(...rows.map(r => r.r), 1);
+  const xVals = rows.map(r => r.x);
+  const yVals = rows.map(r => r.y);
+  const midX  = xVals.sort((a,b)=>a-b)[Math.floor(xVals.length/2)] || 30;
+  const midY  = yVals.sort((a,b)=>a-b)[Math.floor(yVals.length/2)] || 0;
+
+  const datasets = rows.map(r => ({
+    label: r.name,
+    data: [{ x: r.x, y: r.y, r: Math.max(6, Math.min(30, Math.round((r.r / maxR) * 28 + 5))) }],
+    backgroundColor: `rgba(${r.denial_rate > 0.4 ? '239,68,68' : '34,197,94'},0.55)`,
+    borderColor:     r.denial_rate > 0.4 ? '#ef4444' : '#22c55e',
+    borderWidth: 1.5,
+  }));
+
+  capPayerMatrixChart = new Chart(ctx, {
+    type: 'bubble',
+    data: { datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: c => {
+              const rw = rows.find(r => r.name === c.dataset.label) || {};
+              return [
+                ` ${c.dataset.label}`,
+                ` Balance: ${fmtDollar(rw.y)}`,
+                ` Avg denial age: ${rw.x}d`,
+                ` Encounters: ${fmtNum(rw.r)}`,
+                ` Denial rate: ${rw.denial_rate != null ? (rw.denial_rate*100).toFixed(0)+'%' : '—'}`,
+                ` Quadrant: ${(rw.quadrant||'').replace('_',' ').toUpperCase()}`,
+              ];
+            }
+          }
+        }
+      },
+      scales: {
+        x: { title: { display: true, text: 'Avg Denial Age (Days) — Effort', color: '#64748b', font:{size:10} },
+             ticks: { color: '#94a3b8' }, grid: { color: 'rgba(30,58,95,0.5)' } },
+        y: { title: { display: true, text: 'Outstanding Balance ($) — Opportunity', color: '#64748b', font:{size:10} },
+             ticks: { color: '#94a3b8', callback: v => fmtDollar(v) }, grid: { color: 'rgba(30,58,95,0.5)' } }
+      }
+    },
+    plugins: [{
+      id: 'quadrantLines',
+      afterDraw: chart => {
+        const {ctx: c, chartArea: {left, right, top, bottom}, scales: {x, y}} = chart;
+        const qx = x.getPixelForValue(midX);
+        const qy = y.getPixelForValue(midY);
+        c.save();
+        c.setLineDash([4,4]);
+        c.strokeStyle = 'rgba(100,116,139,0.4)';
+        c.lineWidth = 1;
+        c.beginPath(); c.moveTo(qx, top);    c.lineTo(qx, bottom); c.stroke();
+        c.beginPath(); c.moveTo(left, qy);   c.lineTo(right, qy);  c.stroke();
+        c.setLineDash([]);
+        c.font = '9px Inter,sans-serif';
+        c.fillStyle = 'rgba(100,116,139,0.7)';
+        c.fillText('QUICK WINS', left + 4, top + 12);
+        c.fillText('STRATEGIC FOCUS', qx + 4, top + 12);
+        c.fillText('MONITOR', left + 4, bottom - 4);
+        c.fillText('DEPRIORITIZE', qx + 4, bottom - 4);
+        c.restore();
+      }
+    }]
+  });
+}
+
+function renderCapWaterfall(steps) {
+  const ctx = document.getElementById('cap-waterfall-chart');
+  if (!ctx) return;
+  if (capWaterfallChart) { capWaterfallChart.destroy(); capWaterfallChart = null; }
+  if (!steps.length) return;
+  const typeColor = {
+    total:    'rgba(14,165,233,0.75)',
+    deduct:   'rgba(34,197,94,0.65)',
+    warning:  'rgba(245,158,11,0.75)',
+    critical: 'rgba(239,68,68,0.6)',
+    danger:   'rgba(239,68,68,0.88)',
+  };
+  capWaterfallChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: steps.map(s => s.label),
+      datasets: [{
+        data: steps.map(s => Math.abs(s.value)),
+        backgroundColor: steps.map(s => typeColor[s.type] || 'rgba(100,116,139,0.5)'),
+        borderWidth: 1,
+        borderRadius: 3,
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: c => {
+              const s = steps[c.dataIndex];
+              const sign = s.type === 'deduct' ? '−' : s.type === 'total' ? '' : '+';
+              return ` ${sign}${fmtDollar(Math.abs(s.value))} [${s.type.toUpperCase()}]`;
+            }
+          }
+        }
+      },
+      scales: {
+        x: { ticks: { color: '#94a3b8', callback: v => fmtDollar(v) }, grid: { color: 'rgba(30,58,95,0.4)' } },
+        y: { ticks: { color: '#e2e8f0', font: { size: 11 } }, grid: { color: 'rgba(30,58,95,0.25)' } }
+      }
+    }
+  });
+}
+
+function renderCapForecast(forecast) {
+  const ctx = document.getElementById('cap-forecast-chart');
+  if (!ctx) return;
+  if (capForecastChart) { capForecastChart.destroy(); capForecastChart = null; }
+  const bw = forecast.baseline_weeks    || [];
+  const aw = forecast.accelerated_weeks || [];
+  if (!bw.length) return;
+  capForecastChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: bw.map(w => 'Wk ' + w.week),
+      datasets: [
+        {
+          label: 'Current Pace',
+          data: bw.map(w => w.cumulative_recovered),
+          borderColor: '#0ea5e9', backgroundColor: 'rgba(14,165,233,0.08)',
+          pointBackgroundColor: '#0ea5e9', pointRadius: 4, tension: 0.3, fill: true,
+        },
+        {
+          label: 'Accelerated (2× Priority)',
+          data: aw.map(w => w.cumulative_recovered),
+          borderColor: '#22c55e', backgroundColor: 'rgba(34,197,94,0.05)',
+          pointBackgroundColor: '#22c55e', pointRadius: 4, borderDash: [6,3], tension: 0.3, fill: false,
+        }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { labels: { color: '#94a3b8', font: { size: 12 } } },
+        tooltip: { callbacks: { label: c => ` ${c.dataset.label}: ${fmtDollar(c.parsed.y)}` } }
+      },
+      scales: {
+        x: { ticks: { color: '#94a3b8' }, grid: { color: 'rgba(30,58,95,0.4)' } },
+        y: { ticks: { color: '#94a3b8', callback: v => fmtDollar(v) }, grid: { color: 'rgba(30,58,95,0.4)' } }
+      }
+    }
+  });
+  const el = document.getElementById('cap-forecast-summary');
+  if (el && bw.length === 8) {
+    const b8 = bw[7].cumulative_recovered;
+    const a8 = aw[7] ? aw[7].cumulative_recovered : b8;
+    const delta = a8 - b8;
+    const rateNote = forecast.avg_weekly_rate != null
+      ? `(avg ${(forecast.avg_weekly_rate*100).toFixed(1)}% weekly resolution, ${forecast.weeks_of_data_used || 0} weeks of data)`
+      : '';
+    el.innerHTML = `At current pace: <strong style="color:#0ea5e9">${fmtDollar(b8)}</strong> recovered by week 8 ${rateNote}.`
+      + (delta > 0 ? ` &nbsp;|&nbsp; If prioritized: <strong style="color:#22c55e">${fmtDollar(a8)}</strong>`
+        + ` — <span style="color:#22c55e">+${fmtDollar(delta)} additional cash</span> with focused effort.` : '');
+  }
+}
+
+function renderCapFinClassRankings(rows) {
+  const wrap = document.getElementById('cap-finclass-chart-wrap');
+  if (!wrap) return;
+  if (!rows.length) { wrap.innerHTML = '<p style="color:#64748b;padding:20px">No data available.</p>'; return; }
+  const maxBal = Math.max(...rows.map(r => r.total_balance), 1);
+  const prColor = { CRITICAL: '#ef4444', HIGH: '#f59e0b', MEDIUM: '#0ea5e9', MONITOR: '#64748b' };
+  const prBg    = { CRITICAL: 'rgba(239,68,68,0.10)', HIGH: 'rgba(245,158,11,0.08)',
+                    MEDIUM: 'rgba(14,165,233,0.07)', MONITOR: 'transparent' };
+  let html = `<table class="data-table">
+    <thead><tr>
+      <th>Financial Class</th>
+      <th style="text-align:right">Total Balance</th>
+      <th style="width:180px">Balance Bar</th>
+      <th style="text-align:right">90%+ of AR</th>
+      <th style="text-align:right">Denial Rate</th>
+      <th style="text-align:right">Avg Days</th>
+      <th style="text-align:center">Action Priority</th>
+    </tr></thead><tbody>`;
+  rows.forEach(r => {
+    const barW  = Math.max(4, Math.round(r.total_balance / maxBal * 160));
+    const color = prColor[r.action_priority] || '#64748b';
+    const bg    = prBg[r.action_priority]    || 'transparent';
+    html += `<tr style="background:${bg}">
+      <td style="font-weight:500" title="${r.name}">${r.name}</td>
+      <td style="text-align:right;font-weight:600">${fmtDollar(r.total_balance)}</td>
+      <td><div style="width:${barW}px;height:10px;background:${color};border-radius:3px;opacity:0.8"></div></td>
+      <td style="text-align:right;color:${r.pct_over_90 >= 50 ? '#ef4444' : '#94a3b8'}">${r.pct_over_90 != null ? r.pct_over_90.toFixed(1)+'%' : '—'}</td>
+      <td style="text-align:right;color:${r.avg_denial_rate >= 30 ? '#f59e0b' : '#94a3b8'}">${r.avg_denial_rate != null ? r.avg_denial_rate.toFixed(1)+'%' : '—'}</td>
+      <td style="text-align:right">${r.avg_collection_velocity != null ? r.avg_collection_velocity+'d' : '—'}</td>
+      <td style="text-align:center"><span class="action-priority-badge priority-${(r.action_priority||'monitor').toLowerCase()}">${r.action_priority||'—'}</span></td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  wrap.innerHTML = html;
 }
 
 // ── BOOT ─────────────────────────────────────────────────────

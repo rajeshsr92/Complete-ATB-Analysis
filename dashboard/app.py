@@ -37,7 +37,8 @@ from analytics import (wow_trending, trending_summary,
                         atb_bifurcation, bifurcation_summary,
                         unbilled_analysis, balance_group_breakdown, aging_velocity,
                         aging_contributors, compute_high_dollar_threshold,
-                        denial_analysis, denial_velocity)
+                        denial_analysis, denial_velocity,
+                        cash_collection_action_plan)
 
 app = Flask(__name__)
 
@@ -456,6 +457,29 @@ def api_denial_velocity():
         return jsonify({'error': 'Data still loading'}), 503
     filtered = {w: _apply_all_filters(df, request) for w, df in state['weekly_data'].items()}
     return jsonify(denial_velocity(filtered))
+
+
+@app.route('/api/cash-action-plan')
+def api_cash_action_plan():
+    client = request.args.get('client')
+    _, state = _resolve_client(client)
+    if isinstance(state, tuple):
+        return state
+    if state['loading']:
+        return jsonify({'error': 'Data still loading'}), 503
+    week  = request.args.get('week')
+    wd    = state['weekly_data']
+    weeks = state['weeks']
+    if not weeks:
+        return jsonify({'error': 'No data'}), 404
+    if not week or week not in wd:
+        week = weeks[-1]
+    idx        = weeks.index(week)
+    prior_week = weeks[idx - 1] if idx > 0 else week
+    filtered_all = {w: _apply_all_filters(df, request) for w, df in wd.items()}
+    curr  = filtered_all[week]
+    prior = filtered_all[prior_week]
+    return jsonify(cash_collection_action_plan(filtered_all, curr, prior))
 
 
 # Keep old /api/medicare/* paths as aliases so cached bookmarks still work
