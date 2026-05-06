@@ -2073,3 +2073,84 @@ def cash_collection_action_plan(weekly_data: dict, curr_df: pd.DataFrame, prior_
         'fin_class_rankings': fc_rankings,
         'action_insights': insights,
     }
+
+
+def get_priority_encounter_df(df_curr: pd.DataFrame) -> pd.DataFrame:
+    """Return encounter-level DataFrame for Cash Action Plan download (90+ or denied pool)."""
+    curr = _decat(df_curr)
+
+    _BAL   = 'Balance Amount'
+    _ENC   = 'Encounter Number'
+    _DAC   = 'Discharge Aging Category'
+    _DD    = 'Discharge Date'
+    _RD    = 'REPORT_DATE'
+    _LDD   = 'Last Denial Date'
+    _CODE  = 'Last Denial Code and Reason'
+    TF_COL = 'Days to Timely Filing Limit'
+
+    deduped = curr.sort_values(_BAL, ascending=False).drop_duplicates(_ENC)
+
+    report_dt = pd.Timestamp.now()
+    if _RD in deduped.columns:
+        try:
+            rd = pd.to_datetime(deduped[_RD], errors='coerce').max()
+            if pd.notna(rd):
+                report_dt = rd
+        except Exception:
+            pass
+
+    denied_df   = _get_denied_df(deduped)
+    denied_encs = set(denied_df[_ENC].astype(str))
+    pool = deduped[
+        deduped[_DAC].isin(OVER_90_BUCKETS) |
+        deduped[_ENC].astype(str).isin(denied_encs)
+    ].copy()
+
+    if _DD in pool.columns:
+        dd = pd.to_datetime(pool[_DD], errors='coerce')
+        pool['Days Outstanding'] = (report_dt - dd).dt.days.clip(lower=0).astype('Int64')
+    else:
+        pool['Days Outstanding'] = None
+
+    if _LDD in pool.columns:
+        ldd = pd.to_datetime(pool[_LDD], errors='coerce')
+        pool['Denial Age (Days)'] = (report_dt - ldd).dt.days.clip(lower=0).astype('Int64')
+    else:
+        pool['Denial Age (Days)'] = None
+
+    if TF_COL in pool.columns:
+        tf_vals = pd.to_numeric(pool[TF_COL], errors='coerce')
+        conditions = [
+            tf_vals <= 14,
+            tf_vals <= 30,
+            tf_vals <= 60,
+        ]
+        choices = ['CRITICAL (<14d)', 'High (<30d)', 'Medium (<60d)']
+        pool['TF Risk'] = pd.Series(
+            pd.cut(tf_vals, bins=[-1, 14, 30, 60, float('inf')],
+                   labels=['CRITICAL (<14d)', 'High (<30d)', 'Medium (<60d)', 'Low']),
+            index=pool.index
+        ).astype(str).replace('nan', 'N/A')
+    else:
+        pool['TF Risk'] = 'N/A'
+
+    def _action(row):
+        tf_risk  = str(row.get('TF Risk', ''))
+        da       = row.get('Denial Age (Days)', None)
+        dac      = str(row.get(_DAC, ''))
+        code_val = str(row.get(_CODE, '')).strip().lower() if _CODE in row.index else ''
+        has_denial = code_val not in _DENIAL_EMPTY and code_val not in ('', 'nan')
+        if 'CRITICAL' in tf_risk or 'High' in tf_risk:
+            return 'URGENT: File appeal — timely filing deadline near'
+        if has_denial and da is not None and da >= 90:
+            return 'Escalate to denial specialist — aged denial'
+        if has_denial and da is not None and da < 30:
+            return 'Quick Win — recent denial, act now'
+        if dac in OVER_90_BUCKETS and not has_denial:
+            return 'Chase payment — outstanding, no active denial'
+        if has_denial:
+            return 'Denial management — follow up on denial'
+        return 'Standard follow-up and status check'
+
+    pool['Recommended Action'] = pool.apply(_action, axis=1)
+    return pool.sort_values(_BAL, ascending=False)

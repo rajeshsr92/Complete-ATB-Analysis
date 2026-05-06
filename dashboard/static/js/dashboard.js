@@ -214,39 +214,99 @@ function switchClient(name) {
   pollClientStatus(tabId);
 }
 
-function pollClientStatus(tabId, onDone) {
-  fetch(apiUrl('/api/status'))
-    .then(r => r.json())
-    .then(d => {
-      const log = document.getElementById('loader-log');
-      if (d.loading) {
-        document.getElementById('loading-overlay').style.display = 'flex';
-        if (log && d.log) {
-          log.innerHTML = d.log.map(l => {
-            const cls = l.startsWith('[DONE]') || l.startsWith('Loaded') ? 'ok' : l.startsWith('ERROR') ? 'err' : '';
-            return `<p class="${cls}">${l}</p>`;
-          }).join('');
-          log.scrollTop = log.scrollHeight;
-        }
-        setTimeout(() => pollClientStatus(tabId, onDone), 2000);
+function _updateOverlayProgress(clients) {
+  const total = clients.length;
+  const loaded = clients.filter(c => !c.loading && c.weeks && c.weeks.length > 0).length;
+  const errored = clients.filter(c => !c.loading && c.error).length;
+  const pct = total > 0 ? Math.round(loaded / total * 100) : 0;
+
+  const fill = document.getElementById('loader-progress-fill');
+  const txt  = document.getElementById('loader-progress-text');
+  if (fill) fill.style.width = pct + '%';
+  if (txt)  txt.textContent  = `${loaded} of ${total} clients ready  —  ${pct}%${errored ? `  (${errored} error)` : ''}`;
+
+  const wrap = document.getElementById('loader-clients');
+  if (wrap) {
+    wrap.innerHTML = clients.map(c => {
+      if (!c.loading && c.weeks && c.weeks.length > 0) {
+        return `<span class="lc-pill done">&#10003; ${c.name.replace(/_/g,' ')}</span>`;
+      } else if (c.error) {
+        return `<span class="lc-pill err">&#10007; ${c.name.replace(/_/g,' ')}</span>`;
       } else {
-        document.getElementById('loading-overlay').style.display = 'none';
-        allWeeks = d.weeks || [];
-        populateWeekSelectors();
-        loadFilterOptions();   // populate dropdowns once data is ready
-        loadBillingEntities();
-        switchTab(tabId || 'trending');
-        if (highDollarMode) loadHDThreshold();
-        if (typeof onDone === 'function') onDone();
+        return `<span class="lc-pill wait"><span class="lc-spin"></span>${c.name.replace(/_/g,' ')}</span>`;
       }
-    })
-    .catch(() => setTimeout(() => pollClientStatus(tabId, onDone), 3000));
+    }).join('');
+  }
+}
+
+function _updateTopbarBadge(clients) {
+  const badge = document.getElementById('topbar-load-badge');
+  const txt   = document.getElementById('topbar-load-text');
+  if (!badge) return;
+  const still = clients.filter(c => c.loading).length;
+  const total = clients.length;
+  if (still > 0) {
+    const done = total - still;
+    badge.style.display = 'flex';
+    if (txt) txt.textContent = `${done}/${total} clients loaded`;
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+function _startBackgroundProgressPoll() {
+  function tick() {
+    fetch('/api/clients')
+      .then(r => r.json())
+      .then(clients => {
+        _updateTopbarBadge(clients);
+        if (clients.some(c => c.loading)) setTimeout(tick, 3000);
+      })
+      .catch(() => setTimeout(tick, 5000));
+  }
+  tick();
+}
+
+function pollClientStatus(tabId, onDone) {
+  // Also refresh the global client list to update overlay progress
+  Promise.all([
+    fetch(apiUrl('/api/status')).then(r => r.json()),
+    fetch('/api/clients').then(r => r.json()).catch(() => [])
+  ]).then(([d, clients]) => {
+    if (clients.length) _updateOverlayProgress(clients);
+
+    const log = document.getElementById('loader-log');
+    if (d.loading) {
+      document.getElementById('loading-overlay').style.display = 'flex';
+      const sub = document.getElementById('loader-sub');
+      if (sub) sub.textContent = `Loading ${currentClient.replace(/_/g,' ')}…`;
+      if (log && d.log) {
+        log.innerHTML = d.log.map(l => {
+          const cls = l.startsWith('[DONE]') || l.startsWith('Loaded') ? 'ok' : l.startsWith('ERROR') ? 'err' : '';
+          return `<p class="${cls}">${l}</p>`;
+        }).join('');
+        log.scrollTop = log.scrollHeight;
+      }
+      setTimeout(() => pollClientStatus(tabId, onDone), 2000);
+    } else {
+      document.getElementById('loading-overlay').style.display = 'none';
+      allWeeks = d.weeks || [];
+      populateWeekSelectors();
+      loadFilterOptions();
+      loadBillingEntities();
+      switchTab(tabId || 'trending');
+      if (highDollarMode) loadHDThreshold();
+      if (typeof onDone === 'function') onDone();
+      // Keep updating topbar badge while other clients finish
+      _startBackgroundProgressPoll();
+    }
+  }).catch(() => setTimeout(() => pollClientStatus(tabId, onDone), 3000));
 }
 
 // ── LOADING OVERLAY ───────────────────────────────────────────
 function pollLoading() {
-  // Load client list first, then poll status for default client
-  loadClients().then(() => {
+  loadClients().then(clients => {
+    if (clients.length) _updateOverlayProgress(clients);
     pollClientStatus('trending');
   }).catch(() => setTimeout(pollLoading, 3000));
 }
@@ -415,6 +475,67 @@ function populateWeekSelectors() {
   if (selContrib && allWeeks.length >= 1) selContrib.value = allWeeks[allWeeks.length - 1];
   const selDenials = document.getElementById('sel-denials-week');
   if (selDenials && allWeeks.length >= 1) selDenials.value = allWeeks[allWeeks.length - 1];
+}
+
+// ── DOWNLOAD HELPERS ──────────────────────────────────────────
+function triggerDownload(url) { window.location.href = url; }
+
+function _dlWeek() {
+  const ids = ['sel-bifur-week', 'sel-contrib-week', 'sel-denials-week', 'sel-to-week'];
+  for (const id of ids) {
+    const el = document.getElementById(id);
+    if (el && el.value) return el.value;
+  }
+  return allWeeks.length ? allWeeks[allWeeks.length - 1] : '';
+}
+
+function downloadTrending() {
+  const week = allWeeks.length ? allWeeks[allWeeks.length - 1] : '';
+  triggerDownload(apiUrl('/api/download/trending', week ? `week=${week}` : ''));
+}
+
+function downloadMigration(fromBucket, toBucket) {
+  const fw = document.getElementById('sel-from-week')?.value || '';
+  const tw = document.getElementById('sel-to-week')?.value || '';
+  if (!fw || !tw) return;
+  let extra = `from=${encodeURIComponent(fw)}&to=${encodeURIComponent(tw)}`;
+  if (fromBucket) extra += `&from_bucket=${encodeURIComponent(fromBucket)}`;
+  if (toBucket)   extra += `&to_bucket=${encodeURIComponent(toBucket)}`;
+  triggerDownload(apiUrl('/api/download/migration', extra));
+}
+
+function downloadBifurcation(bucket) {
+  const week  = document.getElementById('sel-bifur-week')?.value || _dlWeek();
+  let extra   = `week=${encodeURIComponent(week)}`;
+  if (bucket) extra += `&bucket=${encodeURIComponent(bucket)}`;
+  triggerDownload(apiUrl('/api/download/bifurcation', extra));
+}
+
+function downloadContributors(healthPlan, finClass) {
+  const week = document.getElementById('sel-contrib-week')?.value || _dlWeek();
+  let extra  = `week=${encodeURIComponent(week)}`;
+  if (healthPlan) extra += `&health_plan=${encodeURIComponent(healthPlan)}`;
+  if (finClass)   extra += `&fin_class=${encodeURIComponent(finClass)}`;
+  triggerDownload(apiUrl('/api/download/aging-contributors', extra));
+}
+
+function downloadDenials(denialCode) {
+  const week = document.getElementById('sel-denials-week')?.value || _dlWeek();
+  let extra  = `week=${encodeURIComponent(week)}`;
+  if (denialCode) extra += `&denial_code=${encodeURIComponent(denialCode)}`;
+  triggerDownload(apiUrl('/api/download/denials', extra));
+}
+
+function downloadDenialVelocity() {
+  const week = _dlWeek();
+  triggerDownload(apiUrl('/api/download/denial-velocity', `week=${encodeURIComponent(week)}`));
+}
+
+function downloadCashActionPlan(payer) {
+  const week = _dlWeek();
+  let extra  = `week=${encodeURIComponent(week)}`;
+  if (payer) extra += `&payer=${encodeURIComponent(payer)}`;
+  triggerDownload(apiUrl('/api/download/cash-action-plan', extra));
 }
 
 // ── SHARED: TAB SUMMARY PANEL ────────────────────────────────
@@ -715,9 +836,10 @@ function renderMigrationMatrix(data, fromWeek, toWeek) {
         const bg = hexWithOpacity(baseColor, opacity);
         const textColor = opacity > 0.5 ? '#fff' : '#e2e8f0';
         html += `<td class="matrix-cell"
-          style="background:${bg};color:${textColor}"
+          style="background:${bg};color:${textColor};cursor:pointer"
           data-from="${fb}" data-to="${tb}" data-val="${val}" data-cnt="${cnt}" data-pct="${pct ?? 0}"
-          onmouseenter="showMatrixTip(event,this)" onmouseleave="hideMatrixTip()">
+          onmouseenter="showMatrixTip(event,this)" onmouseleave="hideMatrixTip()"
+          onclick="downloadMigration('${fb.replace(/'/g,"\\'")}','${tb.replace(/'/g,"\\'")}')">
           <div class="cell-val">${fmtDollar(val)}</div>
           <div class="cell-cnt">${fmtNum(cnt)} enc</div>
           ${pct != null ? `<div class="cell-pct">${pct}%</div>` : ''}
@@ -749,9 +871,8 @@ function showMatrixTip(e, cell) {
     <div class="tt-row"><span>Balance</span><span>${fmtDollar(val)}</span></div>
     <div class="tt-row"><span>Encounters</span><span>${fmtNum(cnt)}</span></div>
     <div class="tt-row"><span>% of From-Bucket</span><span>${pct}%</span></div>
-    <div class="tt-row"><span>Movement</span><span>${from === to ? 'STAYED' : BUCKET_COLORS.improved === cellColor(0, -1, 1) ? '' : ''} ${
-      from === to ? '(no change)' : `from ${from} → ${to}`
-    }</span></div>
+    <div class="tt-row"><span>Movement</span><span>${from === to ? '(stayed)' : `${from} → ${to}`}</span></div>
+    <div style="margin-top:6px;font-size:10px;color:#94a3b8;text-align:center">Click cell to download encounters</div>
   `;
   tt.style.display = 'block';
   tt.style.left = (e.clientX + 14) + 'px';
@@ -1512,6 +1633,7 @@ function renderDenialCodeTable(rows, hasReason, hasGroup) {
     const dCls = r.delta_balance > 0 ? 'up' : r.delta_balance < 0 ? 'down' : 'neutral';
     const tr   = document.createElement('tr');
     if (r.is_top90) tr.className = 'top90-row';
+    const codeEsc = r.code.replace(/'/g, "\\'");
     tr.innerHTML = `
       <td>
         ${r.code}
@@ -1524,11 +1646,12 @@ function renderDenialCodeTable(rows, hasReason, hasGroup) {
       <td style="font-weight:600;color:${r.cumulative_pct <= 90 ? '#ef4444' : '#64748b'}">${r.cumulative_pct != null ? r.cumulative_pct + '%' : '—'}</td>
       <td>${fmtDollar(r.prior_balance)}</td>
       <td class="${dCls}">${fmtDollar(r.delta_balance)}</td>
+      <td style="text-align:center"><button class="btn-download-sm" onclick="downloadDenials('${codeEsc}')" title="Download encounters for this denial code">&#8659;</button></td>
     `;
     tbody.appendChild(tr);
   });
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#64748b;padding:20px">No denial code data found.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#64748b;padding:20px">No denial code data found.</td></tr>';
   }
 }
 
@@ -1891,7 +2014,7 @@ function renderCapPriorityTable(rows) {
   if (!tbody) return;
   tbody.innerHTML = '';
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:#64748b;padding:20px">No data available.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:#64748b;padding:20px">No data available.</td></tr>';
     return;
   }
   rows.forEach(r => {
@@ -1902,98 +2025,107 @@ function renderCapPriorityTable(rows) {
     const da     = r.avg_denial_age != null ? r.avg_denial_age + 'd' : '—';
     const daColor = (r.avg_denial_age || 0) >= 90 ? '#ef4444' : '#94a3b8';
     const tfColor = (r.tf_risk_score || 0) >= 0.7 ? '#f59e0b' : '#64748b';
+    const payerEsc = r.payer.replace(/'/g, "\\'");
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td style="text-align:center;font-weight:700;color:${scoreColor}">${r.rank}</td>
-      <td style="font-weight:500;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${r.payer}">${r.payer}</td>
-      <td style="color:#94a3b8;font-size:11px">${r.fin_class}</td>
-      <td style="text-align:right">${fmtNum(r.encounter_count)}</td>
-      <td style="text-align:right;font-weight:600">${fmtDollar(r.balance)}</td>
-      <td style="text-align:right">${r.avg_ar_days != null ? r.avg_ar_days + 'd' : '—'}</td>
-      <td style="text-align:right;color:${daColor}">${da}</td>
-      <td style="text-align:right;color:${tfColor}">${tfRisk}</td>
-      <td style="text-align:center"><span class="priority-score-badge ${scoreClass}">${sc.toFixed(1)}</span></td>
-      <td style="font-size:11px;color:#94a3b8;max-width:200px;white-space:normal">${r.recommended_action}</td>
+      <td style="text-align:center;font-weight:700;color:${scoreColor};white-space:nowrap">${r.rank}</td>
+      <td style="text-align:left;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:150px" title="${r.payer}">${r.payer}</td>
+      <td style="text-align:left;color:#94a3b8;font-size:var(--fs-sm);white-space:nowrap">${r.fin_class}</td>
+      <td style="text-align:right;white-space:nowrap">${fmtNum(r.encounter_count)}</td>
+      <td style="text-align:right;font-weight:600;white-space:nowrap">${fmtDollar(r.balance)}</td>
+      <td style="text-align:right;white-space:nowrap">${r.avg_ar_days != null ? r.avg_ar_days + 'd' : '—'}</td>
+      <td style="text-align:right;color:${daColor};white-space:nowrap">${da}</td>
+      <td style="text-align:right;color:${tfColor};white-space:nowrap">${tfRisk}</td>
+      <td style="text-align:center;white-space:nowrap"><span class="priority-score-badge ${scoreClass}">${sc.toFixed(1)}</span></td>
+      <td style="text-align:left;color:#94a3b8;font-size:var(--fs-sm);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:220px" title="${r.recommended_action}">${r.recommended_action}</td>
+      <td style="text-align:center;white-space:nowrap"><button class="btn-download-sm" onclick="downloadCashActionPlan('${payerEsc}')" title="Download encounters for ${r.payer}">&#8659;</button></td>
     `;
     tbody.appendChild(tr);
   });
 }
 
 function renderCapPayerMatrix(rows) {
-  const ctx = document.getElementById('cap-payer-matrix-chart');
-  if (!ctx) return;
+  const el = document.getElementById('cap-payer-matrix-chart');
+  if (!el) return;
   if (capPayerMatrixChart) { capPayerMatrixChart.destroy(); capPayerMatrixChart = null; }
+
+  const wrap = el.parentElement;
+  wrap.style.height   = 'auto';
+  wrap.style.overflow = 'auto';
+  wrap.style.maxHeight = '340px';
+
   if (!rows.length) {
-    ctx.parentElement.innerHTML = '<p style="color:#64748b;padding:40px;text-align:center">No payer matrix data.</p>';
+    wrap.innerHTML = '<p style="color:#64748b;padding:40px;text-align:center">No payer data.</p>';
     return;
   }
-  const maxR = Math.max(...rows.map(r => r.r), 1);
-  const xVals = rows.map(r => r.x);
-  const yVals = rows.map(r => r.y);
-  const midX  = xVals.sort((a,b)=>a-b)[Math.floor(xVals.length/2)] || 30;
-  const midY  = yVals.sort((a,b)=>a-b)[Math.floor(yVals.length/2)] || 0;
 
-  const datasets = rows.map(r => ({
-    label: r.name,
-    data: [{ x: r.x, y: r.y, r: Math.max(6, Math.min(30, Math.round((r.r / maxR) * 28 + 5))) }],
-    backgroundColor: `rgba(${r.denial_rate > 0.4 ? '239,68,68' : '34,197,94'},0.55)`,
-    borderColor:     r.denial_rate > 0.4 ? '#ef4444' : '#22c55e',
-    borderWidth: 1.5,
-  }));
+  const xSorted = [...rows.map(r => r.x)].sort((a,b)=>a-b);
+  const ySorted = [...rows.map(r => r.y)].sort((a,b)=>a-b);
+  const midX = xSorted[Math.floor(xSorted.length/2)] || 30;
+  const midY = ySorted[Math.floor(ySorted.length/2)] || 0;
 
-  capPayerMatrixChart = new Chart(ctx, {
-    type: 'bubble',
-    data: { datasets },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          callbacks: {
-            label: c => {
-              const rw = rows.find(r => r.name === c.dataset.label) || {};
-              return [
-                ` ${c.dataset.label}`,
-                ` Balance: ${fmtDollar(rw.y)}`,
-                ` Avg denial age: ${rw.x}d`,
-                ` Encounters: ${fmtNum(rw.r)}`,
-                ` Denial rate: ${rw.denial_rate != null ? (rw.denial_rate*100).toFixed(0)+'%' : '—'}`,
-                ` Quadrant: ${(rw.quadrant||'').replace('_',' ').toUpperCase()}`,
-              ];
-            }
-          }
-        }
-      },
-      scales: {
-        x: { title: { display: true, text: 'Avg Denial Age (Days) — Effort', color: '#64748b', font:{size:10} },
-             ticks: { color: '#94a3b8' }, grid: { color: 'rgba(30,58,95,0.5)' } },
-        y: { title: { display: true, text: 'Outstanding Balance ($) — Opportunity', color: '#64748b', font:{size:10} },
-             ticks: { color: '#94a3b8', callback: v => fmtDollar(v) }, grid: { color: 'rgba(30,58,95,0.5)' } }
-      }
-    },
-    plugins: [{
-      id: 'quadrantLines',
-      afterDraw: chart => {
-        const {ctx: c, chartArea: {left, right, top, bottom}, scales: {x, y}} = chart;
-        const qx = x.getPixelForValue(midX);
-        const qy = y.getPixelForValue(midY);
-        c.save();
-        c.setLineDash([4,4]);
-        c.strokeStyle = 'rgba(100,116,139,0.4)';
-        c.lineWidth = 1;
-        c.beginPath(); c.moveTo(qx, top);    c.lineTo(qx, bottom); c.stroke();
-        c.beginPath(); c.moveTo(left, qy);   c.lineTo(right, qy);  c.stroke();
-        c.setLineDash([]);
-        c.font = '9px Inter,sans-serif';
-        c.fillStyle = 'rgba(100,116,139,0.7)';
-        c.fillText('QUICK WINS', left + 4, top + 12);
-        c.fillText('STRATEGIC FOCUS', qx + 4, top + 12);
-        c.fillText('MONITOR', left + 4, bottom - 4);
-        c.fillText('DEPRIORITIZE', qx + 4, bottom - 4);
-        c.restore();
-      }
-    }]
+  const getQ = (x, y) => {
+    if (x <  midX && y >= midY) return 'strategic_focus';  // fresh + high balance = work now
+    if (x >= midX && y >= midY) return 'urgent_recovery';  // aging + high balance = escalate
+    if (x <  midX)              return 'monitor';
+    return 'deprioritize';
+  };
+  const QC = {
+    strategic_focus: { bg: 'rgba(34,197,94,0.14)',   border: '#22c55e', label: 'STRATEGIC FOCUS' },
+    urgent_recovery: { bg: 'rgba(245,158,11,0.14)',  border: '#f59e0b', label: 'URGENT RECOVERY'  },
+    monitor:         { bg: 'rgba(100,116,139,0.10)', border: '#64748b', label: 'MONITOR'           },
+    deprioritize:    { bg: 'rgba(239,68,68,0.10)',   border: '#ef4444', label: 'DEPRIORITIZE'      },
+  };
+  const QORDER = { strategic_focus: 0, urgent_recovery: 1, monitor: 2, deprioritize: 3 };
+
+  const maxBal  = Math.max(...rows.map(r => r.y), 1);
+  const maxAge  = Math.max(...rows.map(r => r.x), 1);
+  const maxRate = Math.max(...rows.map(r => r.denial_rate || 0), 0.01);
+  const maxEnc  = Math.max(...rows.map(r => r.r), 1);
+  const heat = (t, r, g, b) => `rgba(${r},${g},${b},${Math.min(0.55, t * 0.7).toFixed(2)})`;
+
+  const sorted = [...rows].sort((a, b) => {
+    const qa = QORDER[getQ(a.x, a.y)] ?? 9;
+    const qb = QORDER[getQ(b.x, b.y)] ?? 9;
+    return qa !== qb ? qa - qb : b.y - a.y;
   });
+
+  const tbody = sorted.map(r => {
+    const qc   = QC[getQ(r.x, r.y)];
+    const tBal  = r.y / maxBal;
+    const tAge  = r.x / maxAge;
+    const tRate = (r.denial_rate || 0) / maxRate;
+    const tEnc  = r.r / maxEnc;
+    return `<tr style="border-bottom:1px solid rgba(30,58,95,0.5)">
+      <td style="padding:5px 10px;text-align:left;font-weight:500;font-size:12px;white-space:nowrap;max-width:150px;overflow:hidden;text-overflow:ellipsis" title="${r.name}">${r.name}</td>
+      <td style="padding:5px 8px;white-space:nowrap"><span style="background:${qc.bg};color:${qc.border};border:1px solid ${qc.border};border-radius:4px;padding:2px 6px;font-size:10px;font-weight:600">${qc.label}</span></td>
+      <td style="padding:5px 10px;text-align:right;font-size:12px;font-weight:600;background:${heat(tBal,14,165,233)};color:#e2e8f0">${fmtDollar(r.y)}</td>
+      <td style="padding:5px 10px;text-align:right;font-size:12px;background:${heat(tAge,245,158,11)};color:#e2e8f0">${r.x}d</td>
+      <td style="padding:5px 10px;text-align:right;font-size:12px;background:${heat(tRate,239,68,68)};color:#e2e8f0">${r.denial_rate != null ? (r.denial_rate*100).toFixed(0)+'%' : '—'}</td>
+      <td style="padding:5px 10px;text-align:right;font-size:12px;background:${heat(tEnc,139,92,246)};color:#e2e8f0">${fmtNum(r.r)}</td>
+    </tr>`;
+  }).join('');
+
+  wrap.innerHTML = `
+    <div style="display:flex;gap:16px;flex-wrap:wrap;padding:0 2px 8px;font-size:10px;color:#94a3b8">
+      <span><span style="color:#22c55e;font-weight:700">●</span> Strategic Focus — fresh denials, high balance (act now)</span>
+      <span><span style="color:#f59e0b;font-weight:700">●</span> Urgent Recovery — aging denials, high balance (escalate)</span>
+      <span><span style="color:#64748b;font-weight:700">●</span> Monitor</span>
+      <span><span style="color:#ef4444;font-weight:700">●</span> Deprioritize</span>
+    </div>
+    <table style="width:100%;border-collapse:collapse">
+      <thead>
+        <tr style="border-bottom:1px solid #1e3a5f;position:sticky;top:0;background:#1a2d42;z-index:1">
+          <th style="padding:6px 10px;text-align:left;font-size:11px;color:#64748b;font-weight:600">Payer</th>
+          <th style="padding:6px 8px;text-align:left;font-size:11px;color:#64748b;font-weight:600">Priority</th>
+          <th style="padding:6px 10px;text-align:right;font-size:11px;color:#0ea5e9;font-weight:600">Balance</th>
+          <th style="padding:6px 10px;text-align:right;font-size:11px;color:#f59e0b;font-weight:600">Denial Age</th>
+          <th style="padding:6px 10px;text-align:right;font-size:11px;color:#ef4444;font-weight:600">Denial Rate</th>
+          <th style="padding:6px 10px;text-align:right;font-size:11px;color:#8b5cf6;font-weight:600">Enc.</th>
+        </tr>
+      </thead>
+      <tbody>${tbody}</tbody>
+    </table>`;
 }
 
 function renderCapWaterfall(steps) {

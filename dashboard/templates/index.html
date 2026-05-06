@@ -6,7 +6,7 @@
 <title>ATB KPI Dashboard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/css/dashboard.css">
+<link rel="stylesheet" href="/static/css/dashboard.css?v=2">
 
 <!--[if gte mso 9]><xml>
 <mso:CustomDocumentProperties>
@@ -23,8 +23,27 @@
 <div id="loading-overlay">
   <div class="loader-spinner"></div>
   <div class="loader-title">ATB KPI Dashboard</div>
-  <div class="loader-sub">Loading ATB data files — first run may take 2–5 minutes...</div>
+  <div class="loader-sub" id="loader-sub">Connecting to network share and loading EOM data...</div>
+
+  <!-- Global progress bar -->
+  <div class="loader-progress-wrap">
+    <div class="loader-progress-track">
+      <div class="loader-progress-fill" id="loader-progress-fill"></div>
+    </div>
+    <div class="loader-progress-text" id="loader-progress-text">Discovering clients...</div>
+  </div>
+
+  <!-- Per-client status pills -->
+  <div class="loader-clients" id="loader-clients"></div>
+
+  <!-- Per-selected-client log -->
   <div class="loader-log" id="loader-log"><p>Initializing...</p></div>
+</div>
+
+<!-- Topbar loading badge (shown after overlay dismisses while other clients still load) -->
+<div id="global-load-badge" style="display:none">
+  <span class="glb-spinner"></span>
+  <span id="global-load-text">Loading...</span>
 </div>
 
 <!-- TOOLTIP -->
@@ -84,6 +103,10 @@
       <button class="refresh-btn" id="btn-refresh" onclick="refreshData()" title="Reload data files from disk">
         <span class="refresh-icon" id="refresh-icon">&#8635;</span>
       </button>
+      <div id="topbar-load-badge" style="display:none" class="topbar-load-badge">
+        <span class="tlb-dot"></span>
+        <span id="topbar-load-text">Loading…</span>
+      </div>
       <div class="topbar-badge" style="margin-left:12px">● LIVE</div>
     </div>
 
@@ -223,7 +246,9 @@
           <!-- WoW Table -->
           <div class="chart-card">
             <div class="chart-card-header">
-              <div class="chart-card-title">Week-on-Week Summary Table</div>
+              <div class="chart-card-title">Week-on-Week Summary Table
+                <button class="btn-download" onclick="downloadTrending()" title="Download encounter-level raw data for latest week">&#8659; Download</button>
+              </div>
             </div>
             <div class="data-table-wrap">
               <table class="data-table" id="trend-table">
@@ -259,6 +284,7 @@
               <span class="ctrl-label">To Week:</span>
               <select class="ctrl-select" id="sel-to-week" onchange="loadRollover()"></select>
             </div>
+            <button class="btn-download" onclick="downloadMigration()" title="Download all migration encounters for selected weeks">&#8659; Download All</button>
           </div>
 
           <!-- Narrative -->
@@ -351,12 +377,12 @@
             </div>
             <div class="kpi-card">
               <div class="kpi-label">Carried Forward</div>
-              <div class="kpi-value" style="font-size:18px" id="bifur-carried">—</div>
+              <div class="kpi-value" id="bifur-carried">—</div>
               <div class="kpi-delta neutral">from prior week</div>
             </div>
             <div class="kpi-card">
               <div class="kpi-label">New This Week</div>
-              <div class="kpi-value" style="font-size:18px" id="bifur-new">—</div>
+              <div class="kpi-value" id="bifur-new">—</div>
               <div class="kpi-delta neutral">not in prior week</div>
             </div>
           </div>
@@ -387,7 +413,9 @@
           <!-- Detail Table -->
           <div class="chart-card" style="margin-top:20px">
             <div class="chart-card-header">
-              <div class="chart-card-title">Discharge Aging Bifurcation — Detail</div>
+              <div class="chart-card-title">Discharge Aging Bifurcation — Detail
+                <button class="btn-download" onclick="downloadBifurcation()" title="Download encounter-level data for all aging buckets">&#8659; Download</button>
+              </div>
               <div class="chart-card-sub" style="color:#ef4444;font-size:11px">&#9650; Red rows = balance increased &gt;5% vs prior week</div>
             </div>
             <div class="data-table-wrap">
@@ -582,7 +610,9 @@
 
           <!-- Detail Table — By Financial Class -->
           <div class="chart-card" style="margin-bottom:20px">
-            <div class="chart-card-title" style="margin-bottom:14px">90+ Detail by Financial Class</div>
+            <div class="chart-card-title" style="margin-bottom:14px">90+ Detail by Financial Class
+              <button class="btn-download" onclick="downloadContributors()" title="Download all 90+ encounter data">&#8659; Download 90+</button>
+            </div>
             <div class="data-table-wrap">
               <table class="data-table" id="contrib-rfc-table">
                 <thead><tr>
@@ -766,7 +796,9 @@
             <div class="chart-card" style="margin-bottom:20px">
               <div class="chart-card-header">
                 <div>
-                  <div class="chart-card-title">By Last Denial Code &amp; Reason</div>
+                  <div class="chart-card-title">By Last Denial Code &amp; Reason
+                    <button class="btn-download" onclick="downloadDenials()" title="Download all denied encounter data">&#8659; Download All Denials</button>
+                  </div>
                   <div class="chart-card-sub" style="color:#ef4444">
                     <span class="pareto-90-label">TOP 90%</span> highlighted rows = codes driving 90% of denial balance
                   </div>
@@ -784,9 +816,10 @@
                       <th>Cumulative %</th>
                       <th>Prior Balance</th>
                       <th>&Delta; Balance</th>
+                      <th style="text-align:center;width:60px">&#8659;</th>
                     </tr>
                   </thead>
-                  <tbody><tr><td colspan="8" style="text-align:center;color:#64748b;padding:20px">Select a week to load.</td></tr></tbody>
+                  <tbody><tr><td colspan="9" style="text-align:center;color:#64748b;padding:20px">Select a week to load.</td></tr></tbody>
                 </table>
               </div>
             </div>
@@ -890,7 +923,9 @@
             <div class="chart-card">
               <div class="chart-card-header">
                 <div>
-                  <div class="chart-card-title">Denial Code Balance by Denial Age Bucket</div>
+                  <div class="chart-card-title">Denial Code Balance by Denial Age Bucket
+                    <button class="btn-download" onclick="downloadDenialVelocity()" title="Download denied encounters for latest week">&#8659; Download</button>
+                  </div>
                   <div class="chart-card-sub">
                     Rows = top denial codes (sorted by oldest avg denial age) &nbsp;|&nbsp; Columns = age buckets since Last Denial Date &nbsp;|&nbsp;
                     <span style="color:#ef4444">&#9632;</span> High &nbsp;
@@ -979,7 +1014,9 @@
           <div class="chart-card">
             <div class="chart-card-header">
               <div>
-                <div class="chart-card-title">Priority Recovery Score — Work This First</div>
+                <div class="chart-card-title">Priority Recovery Score — Work This First
+                  <button class="btn-download" onclick="downloadCashActionPlan()" title="Download encounter-level priority data">&#8659; Download All</button>
+                </div>
                 <div class="chart-card-sub">
                   Score = 35% Balance + 25% AR Days + 20% TF Risk + 15% Denial Age + 5% Payer Difficulty &nbsp;|&nbsp;
                   <span style="color:#ef4444">&#9632;</span> Critical &nbsp;
@@ -993,19 +1030,20 @@
                 <thead>
                   <tr>
                     <th style="text-align:center;width:36px">#</th>
-                    <th>Payer</th>
-                    <th>Fin. Class</th>
+                    <th style="text-align:left">Payer</th>
+                    <th style="text-align:left">Fin. Class</th>
                     <th style="text-align:right">Enc.</th>
                     <th style="text-align:right">Balance</th>
                     <th style="text-align:right">Avg AR Days</th>
                     <th style="text-align:right">Denial Age</th>
                     <th style="text-align:right">TF Risk</th>
                     <th style="text-align:center">Priority Score</th>
-                    <th>Recommended Action</th>
+                    <th style="text-align:left">Recommended Action</th>
+                    <th style="text-align:center;width:60px">&#8659;</th>
                   </tr>
                 </thead>
                 <tbody>
-                  <tr><td colspan="10" style="text-align:center;color:#64748b;padding:20px">Loading...</td></tr>
+                  <tr><td colspan="11" style="text-align:center;color:#64748b;padding:20px">Loading...</td></tr>
                 </tbody>
               </table>
             </div>
@@ -1016,17 +1054,11 @@
             <div class="chart-card" style="margin-bottom:0">
               <div class="chart-card-header">
                 <div>
-                  <div class="chart-card-title">Payer Action Matrix</div>
-                  <div class="chart-card-sub">X = Avg denial age (effort) &nbsp;|&nbsp; Y = Outstanding balance (opportunity) &nbsp;|&nbsp; Size = Encounter count</div>
+                  <div class="chart-card-title">Payer Priority Heatmap</div>
+                  <div class="chart-card-sub">Sorted by priority · Heat intensity = relative value within each metric</div>
                 </div>
               </div>
-              <div class="chart-wrap" style="height:300px"><canvas id="cap-payer-matrix-chart"></canvas></div>
-              <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:8px;font-size:10px">
-                <div class="quadrant-badge quick-win">&#9650; Quick Wins</div>
-                <div class="quadrant-badge strategic">&#9733; Strategic Focus</div>
-                <div class="quadrant-badge monitor">&#9679; Monitor</div>
-                <div class="quadrant-badge deprioritize">&#8595; Deprioritize</div>
-              </div>
+              <div class="chart-wrap" style="height:auto;overflow:auto;max-height:340px"><canvas id="cap-payer-matrix-chart"></canvas></div>
             </div>
             <div class="chart-card" style="margin-bottom:0">
               <div class="chart-card-header">
@@ -1089,6 +1121,6 @@
 </div><!-- /app -->
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
-<script src="/static/js/dashboard.js"></script>
+<script src="/static/js/dashboard.js?v=2"></script>
 </body>
 </html>
