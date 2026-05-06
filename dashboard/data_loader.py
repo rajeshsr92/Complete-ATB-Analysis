@@ -41,6 +41,9 @@ NETWORK_BASE = r'\\bopsprdwfil01.accretivehealth.local\CBOS_Reporting\ClientRepo
 # Month folder pattern: MM_MonthName  e.g. 04_April
 _MONTH_RE = re.compile(r'^(\d{2})_\w+$')
 
+# Weekly date folder pattern: MM_DD_YYYY  e.g. 05_09_2026
+_WEEKLY_RE = re.compile(r'^(\d{2})_(\d{2})_(\d{4})$')
+
 # Local machine cache for network-share pkls (avoids writing to UNC path and is much faster to read)
 _CACHE_DIR = os.path.join(os.path.expanduser('~'), 'AppData', 'Local', 'atb_eom_cache')
 
@@ -50,12 +53,13 @@ _excel_semaphore = threading.Semaphore(4)
 NEEDED_COLS = [
     'Encounter Number', 'Primary Health Plan',
     'Responsible Financial Class', 'Responsible Health Plan',
-    'Balance Amount', 'Discharge Aging Category', 'Unbilled Aging Category',
+    'Balance Amount', 'Balance Type', 'Discharge Aging Category', 'Unbilled Aging Category',
     'Balance Group', 'REPORT_DATE', 'Discharge Date'
 ]
 
 OPTIONAL_COLS = [
     'Billing Entity',
+    'First Claim Number', 'Last Claim Number',
     'Last Denial Code and Reason', 'Last Denial Date', 'Last Denial Group',
 ]
 
@@ -67,7 +71,7 @@ CAT_COLS = [
 
 DENIAL_CAT_COLS = ['Last Denial Code and Reason', 'Last Denial Group']
 
-PKL_VERSION = 'v7'
+PKL_VERSION = 'v10'
 
 
 def _data_root():
@@ -150,13 +154,40 @@ def _discover_network():
                 if not m:
                     continue  # Non-standard month folder — different format, skip
                 mnum = int(m.group(1))
-                eom_dir = os.path.join(y2026, mf, 'EOM')
-                if not os.path.isdir(eom_dir):
+                month_dir = os.path.join(y2026, mf)
+
+                # Primary: EOM subfolder
+                eom_dir = os.path.join(month_dir, 'EOM')
+                if os.path.isdir(eom_dir):
+                    for f in sorted(os.listdir(eom_dir)):
+                        if 'Claim Level ATB EOM' in f and f.lower().endswith('.xlsx'):
+                            found[mnum] = (mf, os.path.join(eom_dir, f))
+                            break
+                    if mnum in found:
+                        continue  # EOM found — no need for weekly fallback
+
+                # Fallback: latest weekly date subfolder (MM_DD_YYYY)
+                weekly_candidates = []
+                try:
+                    for sub in os.listdir(month_dir):
+                        wm = _WEEKLY_RE.match(sub)
+                        if wm and os.path.isdir(os.path.join(month_dir, sub)):
+                            mm, dd, yyyy = int(wm.group(1)), int(wm.group(2)), int(wm.group(3))
+                            weekly_candidates.append((yyyy, mm, dd, sub))
+                except Exception:
+                    pass
+                if not weekly_candidates:
                     continue
-                for f in sorted(os.listdir(eom_dir)):
-                    if 'Claim Level ATB EOM' in f and f.lower().endswith('.xlsx'):
-                        found[mnum] = (mf, os.path.join(eom_dir, f))
-                        break  # one file per month is enough
+                # Pick latest weekly folder
+                weekly_candidates.sort(reverse=True)
+                _, wm_mm, wm_dd, latest_wf = weekly_candidates[0]
+                weekly_dir = os.path.join(month_dir, latest_wf)
+                for f in sorted(os.listdir(weekly_dir)):
+                    if 'Claim Level ATB' in f and f.lower().endswith('.xlsx'):
+                        # Label as MM.DD.YYYY so _eom_date_from_label passes it through
+                        week_label = f'{wm_mm:02d}.{wm_dd:02d}.{weekly_candidates[0][0]}'
+                        found[mnum] = (week_label, os.path.join(weekly_dir, f))
+                        break
         except Exception:
             continue
 
@@ -257,7 +288,9 @@ def extract_week_date(filename):
 
 
 def _eom_date_from_label(label):
-    """'04_April' → '04.30.2026' (last calendar day of that 2026 month)."""
+    """'04_April' → '04.30.2026'; 'MM.DD.YYYY' weekly labels pass through unchanged."""
+    if re.match(r'^\d{2}\.\d{2}\.\d{4}$', label):
+        return label  # already a formatted date from weekly fallback
     m = _MONTH_RE.match(label)
     if not m:
         return None
@@ -327,13 +360,16 @@ def get_billing_entities(weekly_data):
 
 
 def get_filter_values(weekly_data):
-    fin_classes, health_plans = set(), set()
+    fin_classes, health_plans, balance_types = set(), set(), set()
     for df in weekly_data.values():
         if 'Responsible Financial Class' in df.columns:
             fin_classes.update(df['Responsible Financial Class'].dropna().unique())
         if 'Responsible Health Plan' in df.columns:
             health_plans.update(df['Responsible Health Plan'].dropna().unique())
+        if 'Balance Type' in df.columns:
+            balance_types.update(df['Balance Type'].dropna().unique())
     return {
-        'resp_fin_class': sorted(str(v) for v in fin_classes if str(v) != 'Unknown'),
-        'resp_health_plan': sorted(str(v) for v in health_plans if str(v) != 'Unknown'),
+        'resp_fin_class':  sorted(str(v) for v in fin_classes   if str(v) not in ('Unknown', 'nan', '')),
+        'resp_health_plan': sorted(str(v) for v in health_plans if str(v) not in ('Unknown', 'nan', '')),
+        'balance_type':    sorted(str(v).strip() for v in balance_types if str(v).strip() not in ('Unknown', 'nan', '')),
     }

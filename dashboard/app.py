@@ -36,7 +36,8 @@ from flask import Flask, render_template, jsonify, request, send_file
 from data_loader import (load_all_atb_files, discover_clients, get_filter_values,
                           get_billing_entities)
 from analytics import (wow_trending, trending_summary,
-                        aging_migration, rollover_summary,
+                        atb_retention_analysis,
+                        aging_migration, rollover_summary, migration_cell_detail,
                         atb_bifurcation, bifurcation_summary,
                         unbilled_analysis, balance_group_breakdown, aging_velocity,
                         aging_contributors, compute_high_dollar_threshold,
@@ -149,13 +150,16 @@ def _resolve_client(name=None):
 
 
 def _apply_filters(df, req):
-    """Apply Responsible Financial Class and Responsible Health Plan filters from request args."""
+    """Apply RFC, Health Plan, and Balance Type filters from request args."""
     rfc = [v for v in req.args.get('resp_fin_class', '').split(',') if v]
     rhp = [v for v in req.args.get('resp_health_plan', '').split(',') if v]
+    bt  = [v for v in req.args.get('balance_type', '').split(',') if v]
     if rfc:
         df = df[df['Responsible Financial Class'].astype(str).isin(rfc)]
     if rhp:
         df = df[df['Responsible Health Plan'].astype(str).isin(rhp)]
+    if bt and 'Balance Type' in df.columns:
+        df = df[df['Balance Type'].astype(str).str.strip().isin(bt)]
     return df
 
 
@@ -292,6 +296,49 @@ def api_migration():
     result = aging_migration(a, b)
     result['summary_points'] = rollover_summary(result)
     return jsonify(result)
+
+
+@app.route('/api/retention')
+def api_retention():
+    client = request.args.get('client')
+    _, state = _resolve_client(client)
+    if isinstance(state, tuple):
+        return state
+    if state['loading']:
+        return jsonify({'error': 'Data still loading'}), 503
+    from_week = request.args.get('from')
+    to_week   = request.args.get('to')
+    if not from_week or not to_week:
+        return jsonify({'error': 'from and to parameters required'}), 400
+    wd = state['weekly_data']
+    if from_week not in wd or to_week not in wd:
+        return jsonify({'error': 'Week not found'}), 404
+    a = _apply_all_filters(wd[from_week], request)
+    b = _apply_all_filters(wd[to_week], request)
+    return jsonify(atb_retention_analysis(a, b))
+
+
+@app.route('/api/migration/detail')
+def api_migration_detail():
+    client = request.args.get('client')
+    _, state = _resolve_client(client)
+    if isinstance(state, tuple):
+        return state
+    if state['loading']:
+        return jsonify({'error': 'Data still loading'}), 503
+    from_week   = request.args.get('from')
+    to_week     = request.args.get('to')
+    from_bucket = request.args.get('from_bucket') or None
+    to_bucket   = request.args.get('to_bucket') or None
+    if not from_week or not to_week:
+        return jsonify({'error': 'from and to parameters required'}), 400
+    wd = state['weekly_data']
+    if from_week not in wd or to_week not in wd:
+        return jsonify({'error': 'Week not found'}), 404
+    a = _apply_all_filters(wd[from_week], request)
+    b = _apply_all_filters(wd[to_week], request)
+    rows = migration_cell_detail(a, b, from_bucket, to_bucket)
+    return jsonify({'rows': rows, 'count': len(rows)})
 
 
 @app.route('/api/bifurcation')
@@ -989,8 +1036,39 @@ app.add_url_rule('/api/medicare/migration', view_func=api_migration, endpoint='a
 app.add_url_rule('/api/medicare/bifurcation', view_func=api_bifurcation, endpoint='api_bifurcation_alias')
 
 
+import time as _time
+
+def _friday_auto_refresh():
+    """Daemon: every Friday after 8 am, re-discover and reload all client data."""
+    last_refresh = None
+    _time.sleep(60)  # Let initial load start first
+    while True:
+        now = datetime.datetime.now()
+        today = now.date()
+        # weekday() == 4 is Friday
+        if today.weekday() == 4 and now.hour >= 8 and today != last_refresh:
+            print(f'[FRIDAY-REFRESH] {today} — re-discovering and reloading all client data')
+            try:
+                discovered = discover_clients()
+                for c in discovered:
+                    name, folder = c['name'], c['atb_folder']
+                    with _clients_lock:
+                        existing = _clients.get(name)
+                        if existing and existing.get('loading', False):
+                            continue
+                    t = threading.Thread(target=_reload_client, args=(name, folder), daemon=True)
+                    t.start()
+                last_refresh = today
+                print(f'[FRIDAY-REFRESH] Triggered reload for {len(discovered)} clients')
+            except Exception as e:
+                print(f'[FRIDAY-REFRESH] Error: {e}')
+        _time.sleep(3600)  # Check again in 1 hour
+
+
 if __name__ == '__main__':
     t = threading.Thread(target=_load_all_clients, daemon=True)
     t.start()
+    fr = threading.Thread(target=_friday_auto_refresh, daemon=True, name='friday-refresh')
+    fr.start()
     port = int(os.environ.get('PORT', 5000))
     app.run(debug=False, host='0.0.0.0', port=port, use_reloader=False)

@@ -44,6 +44,14 @@ def _safe_pct(numer, denom):
     return round(float(numer) / float(denom) * 100, 1) if denom else None
 
 
+def _ar_excl_selfpay_total(df: pd.DataFrame) -> float:
+    """Total Balance Amount excluding Self Pay financial class (case-insensitive)."""
+    if 'Responsible Financial Class' not in df.columns:
+        return float(df['Balance Amount'].sum())
+    mask = df['Responsible Financial Class'].astype(str).str.lower().str.replace('-', ' ', regex=False).str.strip() != 'self pay'
+    return float(df.loc[mask, 'Balance Amount'].sum())
+
+
 def _fmt_dollar(v):
     v = float(v)
     if abs(v) >= 1_000_000:
@@ -268,6 +276,109 @@ def trending_summary(rows: list) -> list:
     return points
 
 
+def atb_retention_analysis(week_a_df: pd.DataFrame, week_b_df: pd.DataFrame) -> dict:
+    """
+    From-Week cohort retention view.
+    Shows only encounters that exist in BOTH weeks and where they sit in To Week.
+    Returns stacked flow data: for each From-Week bucket, how the survived
+    encounters are distributed across To-Week buckets.
+    """
+    week_a_df, week_b_df = _decat(week_a_df), _decat(week_b_df)
+
+    def _dedup(df):
+        return (df[['Encounter Number', 'Discharge Aging Category', 'Balance Amount']]
+                .sort_values('Balance Amount', ascending=False)
+                .drop_duplicates('Encounter Number'))
+
+    a = _dedup(week_a_df).copy()
+    b = _dedup(week_b_df).copy()
+    a.columns = ['enc', 'from_bucket', 'from_balance']
+    b.columns = ['enc', 'to_bucket',   'to_balance']
+
+    survived       = pd.merge(a, b, on='enc', how='inner')
+    cohort_count   = int(len(a))
+    survived_count = int(len(survived))
+    resolved_count = cohort_count - survived_count
+    retention_rate = round(_safe_pct(survived_count, cohort_count), 1)
+    survived_bal   = round(float(survived['to_balance'].sum()), 2)
+    cohort_bal     = round(float(a['from_balance'].sum()), 2)
+
+    all_bkts = set(survived['from_bucket'].unique()) | set(survived['to_bucket'].unique())
+    ordered  = [bkt for bkt in BUCKET_ORDER if bkt in all_bkts]
+    ordered += sorted(all_bkts - set(BUCKET_ORDER))
+
+    from_bkts = [bkt for bkt in BUCKET_ORDER if bkt in set(survived['from_bucket'].unique())]
+    from_bkts += sorted(set(survived['from_bucket'].unique()) - set(BUCKET_ORDER))
+
+    flows = {}
+    for fb in from_bkts:
+        sub      = survived[survived['from_bucket'] == fb]
+        fb_count = int(len(sub))
+        fb_bal   = float(sub['to_balance'].sum())
+        flows[fb] = {}
+        for tb in ordered:
+            cell = sub[sub['to_bucket'] == tb]
+            cnt  = int(len(cell))
+            bal  = round(float(cell['to_balance'].sum()), 2)
+            fi   = BUCKET_INDEX.get(fb, 99)
+            ti   = BUCKET_INDEX.get(tb, 99)
+            if fi == ti:
+                move = 'stayed'
+            elif ti > fi:
+                move = 'aged1' if (ti - fi) == 1 else 'aged2'
+            else:
+                move = 'improved'
+            flows[fb][tb] = {
+                'count':     cnt,
+                'balance':   bal,
+                'pct_count': round(_safe_pct(cnt, fb_count), 1),
+                'pct_bal':   round(_safe_pct(bal, fb_bal), 1),
+                'move':      move,
+            }
+
+    to_summary = {}
+    for tb in ordered:
+        sub = survived[survived['to_bucket'] == tb]
+        to_summary[tb] = {
+            'count':   int(len(sub)),
+            'balance': round(float(sub['to_balance'].sum()), 2),
+            'pct':     round(_safe_pct(len(sub), survived_count), 1),
+        }
+
+    # Build matrix in same format as aging_migration() for reuse of matrix renderer
+    overall_denom = _ar_excl_selfpay_total(week_b_df)
+    matrix = {}
+    for fb in from_bkts:
+        sub          = survived[survived['from_bucket'] == fb]
+        fb_total_cnt = int(len(sub))
+        matrix[fb]   = {}
+        for tb in ordered:
+            cell = sub[sub['to_bucket'] == tb]
+            val  = round(float(cell['to_balance'].sum()), 2)
+            cnt  = int(len(cell))
+            matrix[fb][tb] = {
+                'value':     val,
+                'count':     cnt,
+                'pct':       round(_safe_pct(val, overall_denom), 1),
+                'pct_count': round(_safe_pct(cnt, fb_total_cnt), 1),
+            }
+
+    return {
+        'cohort_count':     cohort_count,
+        'cohort_balance':   cohort_bal,
+        'survived_count':   survived_count,
+        'survived_balance': survived_bal,
+        'resolved_count':   resolved_count,
+        'retention_rate':   retention_rate,
+        'from_buckets':     from_bkts,
+        'to_buckets':       ordered,
+        'buckets':          ordered,
+        'matrix':           matrix,
+        'flows':            flows,
+        'to_summary':       to_summary,
+    }
+
+
 def aging_migration(week_a_df: pd.DataFrame, week_b_df: pd.DataFrame) -> dict:
     week_a_df, week_b_df = _decat(week_a_df), _decat(week_b_df)
 
@@ -293,17 +404,18 @@ def aging_migration(week_a_df: pd.DataFrame, week_b_df: pd.DataFrame) -> dict:
     unknown = sorted(all_buckets_in_data - set(BUCKET_ORDER))
     buckets = buckets + unknown
 
+    overall_denom = _ar_excl_selfpay_total(week_b_df)
+
     matrix = {}
     for fb in buckets:
         sub = merged[merged['from_bucket'] == fb]
-        from_total_bal = float(sub['to_balance'].sum())
         from_total_cnt = len(sub)
         matrix[fb] = {}
         for tb in buckets:
             cell = sub[sub['to_bucket'] == tb]
             val = float(cell['to_balance'].sum())
             cnt = int(len(cell))
-            pct_bal = _safe_pct(val, from_total_bal)
+            pct_bal = _safe_pct(val, overall_denom)
             pct_cnt = _safe_pct(cnt, from_total_cnt)
             matrix[fb][tb] = {
                 'value': round(val, 2),
@@ -328,9 +440,27 @@ def aging_migration(week_a_df: pd.DataFrame, week_b_df: pd.DataFrame) -> dict:
     )
     aged_out = merged[moved_worse]
 
+    to_week_by_bucket = {}
+    for tb in buckets:
+        all_tb  = b[b['to_bucket'] == tb]
+        roll_tb = merged[merged['to_bucket'] == tb]
+        total_bal = round(float(all_tb['to_balance'].sum()), 2)
+        roll_bal  = round(float(roll_tb['to_balance'].sum()), 2)
+        to_week_by_bucket[tb] = {
+            'total_balance':    total_bal,
+            'rollover_balance': roll_bal,
+            'new_balance':      round(total_bal - roll_bal, 2),
+            'pct_of_total':     round(_safe_pct(total_bal, overall_denom), 1),
+            'total_count':      int(len(all_tb)),
+            'rollover_count':   int(len(roll_tb)),
+            'new_count':        int(len(all_tb)) - int(len(roll_tb)),
+        }
+
     return {
         'buckets': buckets,
         'matrix': matrix,
+        'to_week_by_bucket': to_week_by_bucket,
+        'to_week_total_balance': round(float(week_b_df['Balance Amount'].sum()), 2),
         'summary': {
             'total_continued': int(len(merged)),
             'continued_balance': round(float(merged['to_balance'].sum()), 2),
@@ -350,6 +480,76 @@ def aging_migration(week_a_df: pd.DataFrame, week_b_df: pd.DataFrame) -> dict:
             'by_bucket': _bucket_summary(resolved_encs),
         },
     }
+
+
+def migration_cell_detail(week_a_df: pd.DataFrame, week_b_df: pd.DataFrame,
+                          from_bucket=None, to_bucket=None) -> list:
+    """Return encounter-level rows for a specific migration cell (or full set if no bucket filter)."""
+    week_a_df, week_b_df = _decat(week_a_df), _decat(week_b_df)
+
+    _EXTRA = ['Responsible Health Plan', 'Responsible Financial Class',
+              'First Claim Number', 'Last Claim Number', 'Discharge Date']
+
+    def _prep(df, bal_col, bkt_col):
+        cols = ['Encounter Number', 'Discharge Aging Category', 'Balance Amount']
+        for c in _EXTRA:
+            if c in df.columns:
+                cols.append(c)
+        sub = (df[list(dict.fromkeys(cols))]
+               .sort_values('Balance Amount', ascending=False)
+               .drop_duplicates('Encounter Number'))
+        return sub.rename(columns={'Balance Amount': bal_col,
+                                   'Discharge Aging Category': bkt_col})
+
+    a = _prep(week_a_df, 'from_balance', 'from_bucket')
+    b_simple = (_decat(week_b_df)[['Encounter Number', 'Discharge Aging Category', 'Balance Amount']]
+                .sort_values('Balance Amount', ascending=False)
+                .drop_duplicates('Encounter Number')
+                .rename(columns={'Balance Amount': 'to_balance',
+                                 'Discharge Aging Category': 'to_bucket'}))
+
+    merged = pd.merge(a, b_simple, on='Encounter Number', how='inner')
+
+    if from_bucket:
+        merged = merged[merged['from_bucket'] == from_bucket]
+    if to_bucket:
+        merged = merged[merged['to_bucket'] == to_bucket]
+
+    merged = merged.copy()
+    merged['balance_change'] = (merged['to_balance'] - merged['from_balance']).round(2)
+
+    def _movement(row):
+        fi = BUCKET_INDEX.get(row['from_bucket'], 99)
+        ti = BUCKET_INDEX.get(row['to_bucket'], 99)
+        if fi == ti:
+            return 'Stayed'
+        elif ti > fi:
+            diff = ti - fi
+            return f'Aged {diff} bucket{"s" if diff > 1 else ""}'
+        return 'Improved'
+
+    merged['movement'] = merged.apply(_movement, axis=1)
+    merged = merged.sort_values('to_balance', ascending=False)
+
+    rows = []
+    for _, r in merged.iterrows():
+        enc = r['Encounter Number']
+        row = {
+            'enc': str(int(enc)) if pd.notna(enc) else '',
+            'from_bucket': str(r.get('from_bucket', '')),
+            'to_bucket': str(r.get('to_bucket', '')),
+            'from_balance': round(float(r['from_balance']), 2),
+            'to_balance': round(float(r['to_balance']), 2),
+            'balance_change': round(float(r['balance_change']), 2),
+            'movement': r.get('movement', ''),
+        }
+        for c in _EXTRA:
+            if c in merged.columns:
+                v = r[c]
+                row[c] = '' if (not isinstance(v, str) and pd.isna(v)) else str(v)
+        rows.append(row)
+
+    return rows
 
 
 def rollover_summary(migration_data: dict) -> list:

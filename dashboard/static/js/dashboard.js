@@ -16,21 +16,22 @@ let allWeeks = [];
 let currentClient = '';
 let highDollarMode = false;
 
-// Active filter state: {rfc: [...], rhp: [...]}
-const activeFilters = { rfc: [], rhp: [] };
+// Active filter state: {rfc: [...], rhp: [...], bt: [...]}
+const activeFilters = { rfc: [], rhp: [], bt: [] };
 
 // ── FILTER PARAM BUILDER ──────────────────────────────────────
 function filterParams() {
   const parts = [];
   if (activeFilters.rfc.length) parts.push('resp_fin_class=' + encodeURIComponent(activeFilters.rfc.join(',')));
   if (activeFilters.rhp.length) parts.push('resp_health_plan=' + encodeURIComponent(activeFilters.rhp.join(',')));
+  if (activeFilters.bt.length)  parts.push('balance_type=' + encodeURIComponent(activeFilters.bt.join(',')));
   if (highDollarMode) parts.push('high_dollar=true');
   return parts.join('&');
 }
 
 // ── MULTISELECT DROPDOWN COMPONENT ───────────────────────────
-// fdId: 'fd-rfc' or 'fd-rhp', maps to activeFilters.rfc / .rhp
-const FD_MAP = { 'fd-rfc': 'rfc', 'fd-rhp': 'rhp' };
+// fdId: 'fd-rfc', 'fd-rhp', or 'fd-bt', maps to activeFilters keys
+const FD_MAP = { 'fd-rfc': 'rfc', 'fd-rhp': 'rhp', 'fd-bt': 'bt' };
 
 function fdBuild(fdId, values) {
   const opts = document.getElementById(fdId + '-options');
@@ -99,12 +100,13 @@ function fdChange(fdId) {
 function clearAllFilters() {
   fdClear('fd-rfc');
   fdClear('fd-rhp');
+  fdClear('fd-bt');
 }
 
 function updateFilterActiveBadge() {
   const bar = document.getElementById('filter-active-bar');
   const tags = document.getElementById('filter-active-tags');
-  const total = activeFilters.rfc.length + activeFilters.rhp.length;
+  const total = activeFilters.rfc.length + activeFilters.rhp.length + activeFilters.bt.length;
   if (total === 0) {
     bar.classList.remove('visible');
     return;
@@ -113,6 +115,7 @@ function updateFilterActiveBadge() {
   const parts = [];
   if (activeFilters.rfc.length) parts.push(`Fin.Class: ${activeFilters.rfc.length} selected`);
   if (activeFilters.rhp.length) parts.push(`Health Plan: ${activeFilters.rhp.length} selected`);
+  if (activeFilters.bt.length)  parts.push(`Bal.Type: ${activeFilters.bt.join(', ')}`);
   tags.innerHTML = parts.map(p => `<span class="filter-tag">${p}</span>`).join('');
 }
 
@@ -120,15 +123,21 @@ function loadFilterOptions() {
   fetch(apiUrl('/api/filters'))
     .then(r => r.json())
     .then(d => {
-      if (d.resp_fin_class) fdBuild('fd-rfc', d.resp_fin_class);
+      if (d.resp_fin_class)  fdBuild('fd-rfc', d.resp_fin_class);
       if (d.resp_health_plan) fdBuild('fd-rhp', d.resp_health_plan);
-      // Restore previously checked values
-      ['fd-rfc', 'fd-rhp'].forEach(fdId => {
+      if (d.balance_type)    fdBuild('fd-bt', d.balance_type);
+
+      // Restore previously checked values (or pre-select AR - Debit by default)
+      ['fd-rfc', 'fd-rhp', 'fd-bt'].forEach(fdId => {
         const key = FD_MAP[fdId];
         if (activeFilters[key].length) {
           document.querySelectorAll(`#${fdId}-options input`).forEach(cb => {
             cb.checked = activeFilters[key].includes(cb.value);
           });
+        } else if (fdId === 'fd-bt') {
+          // Default: pre-select AR - Debit
+          const arDebit = document.querySelector(`#fd-bt-options input[value="AR - Debit"]`);
+          if (arDebit) { arDebit.checked = true; fdChange('fd-bt'); }
         }
       });
     })
@@ -316,7 +325,8 @@ function switchTab(id) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === id));
   document.querySelectorAll('.tab-pane').forEach(p => p.style.display = p.id === 'tab-' + id ? 'block' : 'none');
   if (id === 'trending') loadTrending();
-  if (id === 'rollover') loadRollover();
+  if (id === 'rollover')   loadRollover();
+  if (id === 'retention')  loadRetention();
   if (id === 'bifurcation') loadBifurcation();
   if (id === 'contributors') loadContributors();
   if (id === 'denials') loadDenials();
@@ -452,28 +462,32 @@ function loadPayerInfo() {
 }
 
 function populateWeekSelectors() {
-  ['sel-from-week', 'sel-to-week', 'sel-bifur-week', 'sel-contrib-week', 'sel-denials-week'].forEach(id => {
+  ['sel-from-week','sel-to-week','ret-from-week','ret-to-week',
+   'sel-bifur-week','sel-contrib-week','sel-denials-week'].forEach(id => {
     const el = document.getElementById(id);
     if (!el) return;
     el.innerHTML = '';
-    allWeeks.forEach((w, i) => {
+    allWeeks.forEach(w => {
       const opt = document.createElement('option');
-      opt.value = w;
-      opt.textContent = fmtWeek(w);
+      opt.value = w; opt.textContent = fmtWeek(w);
       el.appendChild(opt);
     });
   });
 
-  const selFrom = document.getElementById('sel-from-week');
-  const selTo = document.getElementById('sel-to-week');
-  const selBifur = document.getElementById('sel-bifur-week');
-
+  const selFrom    = document.getElementById('sel-from-week');
+  const selTo      = document.getElementById('sel-to-week');
+  const selBifur   = document.getElementById('sel-bifur-week');
   const selContrib = document.getElementById('sel-contrib-week');
-  if (selFrom && allWeeks.length >= 2) selFrom.value = allWeeks[allWeeks.length - 2];
-  if (selTo && allWeeks.length >= 1) selTo.value = allWeeks[allWeeks.length - 1];
+  const selDenials = document.getElementById('sel-denials-week');
+  const retFrom    = document.getElementById('ret-from-week');
+  const retTo      = document.getElementById('ret-to-week');
+
+  if (selFrom  && allWeeks.length >= 2) selFrom.value  = allWeeks[allWeeks.length - 2];
+  if (selTo    && allWeeks.length >= 1) selTo.value    = allWeeks[allWeeks.length - 1];
+  if (retFrom  && allWeeks.length >= 2) retFrom.value  = allWeeks[allWeeks.length - 2];
+  if (retTo    && allWeeks.length >= 1) retTo.value    = allWeeks[allWeeks.length - 1];
   if (selBifur && allWeeks.length >= 1) selBifur.value = allWeeks[allWeeks.length - 1];
   if (selContrib && allWeeks.length >= 1) selContrib.value = allWeeks[allWeeks.length - 1];
-  const selDenials = document.getElementById('sel-denials-week');
   if (selDenials && allWeeks.length >= 1) selDenials.value = allWeeks[allWeeks.length - 1];
 }
 
@@ -745,12 +759,190 @@ function renderTrendTable(data) {
 }
 
 // ── TAB 2: AGING ROLLOVER ─────────────────────────────────────
+// ── ATB RETENTION TAB ─────────────────────────────────────────
+
+let _retFromWeek = '', _retToWeek = '';
+
+function loadRetention() {
+  const fromWeek = document.getElementById('ret-from-week')?.value;
+  const toWeek   = document.getElementById('ret-to-week')?.value;
+  if (!fromWeek || !toWeek) return;
+  _retFromWeek = fromWeek;
+  _retToWeek   = toWeek;
+
+  document.getElementById('ret-waterfall-wrap').innerHTML =
+    '<div style="padding:40px;text-align:center;color:#94a3b8"><div class="spinner" style="margin:0 auto 12px"></div>Loading retention analysis…</div>';
+
+  fetch(apiUrl('/api/retention', `from=${encodeURIComponent(fromWeek)}&to=${encodeURIComponent(toWeek)}`))
+    .then(r => r.json())
+    .then(data => {
+      if (!data || data.error) return;
+      renderRetentionKPI(data, fromWeek, toWeek);
+      renderRetentionWaterfall(data, fromWeek, toWeek);
+      renderRetentionSummaryTable(data);
+    })
+    .catch(() => {});
+}
+
+function renderRetentionKPI(data, fromWeek, toWeek) {
+  const rateColor = data.retention_rate >= 80 ? '#4ade80' : data.retention_rate >= 60 ? '#facc15' : '#f87171';
+
+  function setRetKPI(id, val, sub) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.querySelector('.ret-kpi-value').textContent = val;
+    el.querySelector('.ret-kpi-sub').textContent   = sub;
+  }
+
+  setRetKPI('ret-kpi-cohort',   fmtNum(data.cohort_count),     `${fmtDollar(data.cohort_balance)} total balance in ${fmtWeek(fromWeek)}`);
+  setRetKPI('ret-kpi-survived', fmtNum(data.survived_count),   `${fmtNum(data.resolved_count)} resolved / dropped off`);
+  setRetKPI('ret-kpi-resolved', fmtNum(data.resolved_count),   `${Math.round(100 - data.retention_rate)}% of cohort cleared`);
+  setRetKPI('ret-kpi-rate',     data.retention_rate + '%',     `of From-Week cohort still on ATB`);
+  setRetKPI('ret-kpi-bal',      fmtDollar(data.survived_balance), `as of ${fmtWeek(toWeek)}`);
+
+  const rateEl = document.getElementById('ret-kpi-rate');
+  if (rateEl) rateEl.querySelector('.ret-kpi-value').style.color = rateColor;
+}
+
+function renderRetentionWaterfall(data, fromWeek, toWeek) {
+  const wrap     = document.getElementById('ret-waterfall-wrap');
+  const fromBkts = data.from_buckets;
+  const toBkts   = data.to_buckets;
+  const flows    = data.flows;
+
+  if (!fromBkts.length) {
+    wrap.innerHTML = '<p style="color:#94a3b8;text-align:center;padding:30px">No survived encounters found between the selected weeks.</p>';
+    return;
+  }
+
+  const MOVE_COLOR = { stayed:'#2563eb', improved:'#16a34a', aged1:'#d97706', aged2:'#dc2626' };
+
+  let html = '<div class="ret-waterfall">';
+  fromBkts.forEach(fb => {
+    const rowFlows = flows[fb] || {};
+    const rowTotal = Object.values(rowFlows).reduce((s, c) => s + (c.balance || 0), 0);
+    if (!rowTotal) return;
+
+    // Build segments ordered by to_bucket
+    const segments = toBkts
+      .map(tb => ({ tb, ...rowFlows[tb] }))
+      .filter(s => s.balance > 0);
+
+    html += `<div class="ret-row">
+      <div class="ret-row-label">
+        <div class="ret-bucket-name">${fb}</div>
+        <div class="ret-bucket-total">${fmtDollar(rowTotal)}</div>
+      </div>
+      <div class="ret-bar-track">`;
+
+    segments.forEach(seg => {
+      const pct   = seg.pct_bal || 0;
+      const color = MOVE_COLOR[seg.move] || '#64748b';
+      const fbe   = fb.replace(/'/g, "\\'");
+      const tbe   = seg.tb.replace(/'/g, "\\'");
+      html += `<div class="ret-bar-seg"
+        style="width:${pct}%;background:${color};min-width:${pct > 0 ? '3px' : '0'}"
+        data-from="${fb}" data-to="${seg.tb}" data-pct="${pct}"
+        data-bal="${seg.balance}" data-cnt="${seg.count}"
+        onmouseenter="showRetTip(event,this)" onmouseleave="hideMatrixTip()"
+        onclick="openRetentionDrilldown('${fbe}','${tbe}')">
+        ${pct >= 8 ? `<span class="ret-seg-label">${seg.tb}<br>${pct}%</span>` : ''}
+      </div>`;
+    });
+
+    html += `</div>
+      <div class="ret-row-right">
+        <span class="ret-enc-count">${fmtNum(Object.values(rowFlows).reduce((s,c) => s + (c.count||0), 0))} enc</span>
+      </div>
+    </div>`;
+  });
+
+  html += '</div>';
+  wrap.innerHTML = html;
+}
+
+function showRetTip(e, seg) {
+  const tt = document.getElementById('matrix-tooltip');
+  const from = seg.dataset.from, to = seg.dataset.to;
+  const bal  = parseFloat(seg.dataset.bal);
+  const cnt  = parseInt(seg.dataset.cnt);
+  const pct  = parseFloat(seg.dataset.pct);
+  tt.innerHTML = `
+    <div class="tt-title">${from} &rarr; ${to}</div>
+    <div class="tt-row"><span>Balance</span><span>${fmtDollar(bal)}</span></div>
+    <div class="tt-row"><span>Encounters</span><span>${fmtNum(cnt)}</span></div>
+    <div class="tt-row"><span>% of From-Row</span><span>${pct}%</span></div>
+    <div style="margin-top:8px;font-size:10px;color:#38bdf8;text-align:center;border-top:1px solid rgba(255,255,255,0.1);padding-top:6px">
+      &#128065; Click to drill into ${fmtNum(cnt)} encounters
+    </div>`;
+  tt.style.display = 'block';
+  tt.style.left    = (e.clientX + 14) + 'px';
+  tt.style.top     = (e.clientY - 10) + 'px';
+}
+
+function openRetentionDrilldown(fromBucket, toBucket) {
+  // Temporarily swap rollover week vars so the shared drawer uses the retention weeks
+  const savedFrom = _rolloverFromWeek, savedTo = _rolloverToWeek;
+  _rolloverFromWeek = _retFromWeek;
+  _rolloverToWeek   = _retToWeek;
+  openMigrationDrawer(fromBucket, toBucket);
+  // Restore after drawer sets its own copies
+  _rolloverFromWeek = savedFrom;
+  _rolloverToWeek   = savedTo;
+}
+
+function renderRetentionSummaryTable(data) {
+  const toBkts  = data.to_buckets;
+  const summary = data.to_summary;
+  if (!toBkts.length) return;
+
+  let html = `<table class="data-table" style="font-size:12px">
+    <thead><tr>
+      <th>To Week Bucket</th>
+      <th style="text-align:right">Encounters</th>
+      <th style="text-align:right">% of Cohort</th>
+      <th style="text-align:right">Balance (To Week)</th>
+    </tr></thead><tbody>`;
+
+  toBkts.forEach((tb, i) => {
+    const s = summary[tb];
+    if (!s || !s.count) return;
+    html += `<tr class="${i % 2 === 1 ? 'dt-row-alt' : ''}">
+      <td><span class="bucket-pill">${tb}</span></td>
+      <td style="text-align:right">${fmtNum(s.count)}</td>
+      <td style="text-align:right">${s.pct}%</td>
+      <td style="text-align:right;font-weight:700">${fmtDollar(s.balance)}</td>
+    </tr>`;
+  });
+
+  const totalBal = toBkts.reduce((s, tb) => s + (summary[tb]?.balance || 0), 0);
+  const totalCnt = toBkts.reduce((s, tb) => s + (summary[tb]?.count   || 0), 0);
+  html += `<tr style="font-weight:700;border-top:2px solid rgba(255,255,255,0.1)">
+    <td>TOTAL</td>
+    <td style="text-align:right">${fmtNum(totalCnt)}</td>
+    <td style="text-align:right">100%</td>
+    <td style="text-align:right">${fmtDollar(totalBal)}</td>
+  </tr></tbody></table>`;
+
+  document.getElementById('ret-summary-wrap').innerHTML = html;
+}
+
+// ── AGING ROLLOVER / WATERFALL ────────────────────────────────
+
+let _rolloverFromWeek = '', _rolloverToWeek = '';
+let _drawerFromBucket = '', _drawerToBucket = '';
+let _drawerAllRows = [];
+let _drawerSortCol = 'to_balance', _drawerSortAsc = false;
+
 function loadRollover() {
   const fromWeek = document.getElementById('sel-from-week')?.value;
-  const toWeek = document.getElementById('sel-to-week')?.value;
+  const toWeek   = document.getElementById('sel-to-week')?.value;
   if (!fromWeek || !toWeek) return;
+  _rolloverFromWeek = fromWeek;
+  _rolloverToWeek   = toWeek;
 
-  document.getElementById('matrix-wrap').innerHTML = '<p style="color:#94a3b8;padding:20px;text-align:center">Loading...</p>';
+  document.getElementById('matrix-wrap').innerHTML =
+    '<div style="padding:48px;text-align:center;color:#94a3b8"><div class="spinner" style="margin:0 auto 12px"></div>Loading waterfall…</div>';
 
   fetch(apiUrl('/api/migration', `from=${fromWeek}&to=${toWeek}`))
     .then(r => r.json())
@@ -760,6 +952,7 @@ function loadRollover() {
       renderMigrationSummary(data, fromWeek, toWeek);
       renderMigrationNarrative(data, fromWeek, toWeek);
       renderTabSummary('rollover-summary', data.summary_points || []);
+      renderToWeekDistribution(data, toWeek);
     })
     .catch(() => {});
 }
@@ -767,88 +960,141 @@ function loadRollover() {
 function renderMigrationNarrative(data, fromWeek, toWeek) {
   const el = document.getElementById('rollover-narrative');
   if (!el) return;
-  const s = data.summary;
-  const aged = s.aged_worse_count;
-  const agedBal = fmtDollar(s.aged_worse_balance);
-  const newCnt = data.new_encounters.count;
-  const newBal = fmtDollar(data.new_encounters.balance);
-  const resolved = data.resolved_encounters.count;
-  const resolvedBal = fmtDollar(data.resolved_encounters.balance);
+  const s   = data.summary;
+  const pct = s.total_continued ? Math.round(s.aged_worse_count / s.total_continued * 100) : 0;
   el.innerHTML = `
-    Comparing <strong>${fmtWeek(fromWeek)}</strong> → <strong>${fmtWeek(toWeek)}</strong>: &nbsp;
-    <span class="danger-text">${fmtNum(aged)} encounters (${agedBal})</span> aged into older buckets. &nbsp;
-    <span class="highlight">${fmtNum(newCnt)} new encounters (${newBal})</span> entered the ATB. &nbsp;
-    <span class="success-text">${fmtNum(resolved)} encounters (${resolvedBal})</span> resolved / dropped off.
+    <span style="color:#94a3b8">Comparing</span>
+    <strong style="color:#e2e8f0">${fmtWeek(fromWeek)}</strong>
+    <span style="color:#64748b">→</span>
+    <strong style="color:#e2e8f0">${fmtWeek(toWeek)}</strong> &nbsp;|&nbsp;
+    <span class="danger-text">&#8599; ${fmtNum(s.aged_worse_count)} enc (${fmtDollar(s.aged_worse_balance)}) aged older</span> &nbsp;·&nbsp;
+    <span style="color:#2563eb">&#8644; ${fmtNum(s.stayed_count)} stayed (${fmtDollar(s.stayed_balance)})</span> &nbsp;·&nbsp;
+    <span class="highlight">&#43; ${fmtNum(data.new_encounters.count)} new (${fmtDollar(data.new_encounters.balance)})</span> &nbsp;·&nbsp;
+    <span class="success-text">&#10003; ${fmtNum(data.resolved_encounters.count)} resolved (${fmtDollar(data.resolved_encounters.balance)})</span>
   `;
 }
 
 const BUCKET_COLORS = {
   diagonal: '#2563eb',
   improved: '#16a34a',
-  worse1: '#d97706',
-  worse2: '#dc2626',
+  worse1:   '#d97706',
+  worse2:   '#dc2626',
 };
 
 function cellColor(fromIdx, toIdx, value) {
   if (!value || value === 0) return null;
   if (fromIdx === toIdx) return BUCKET_COLORS.diagonal;
-  if (toIdx < fromIdx) return BUCKET_COLORS.improved;
+  if (toIdx < fromIdx)   return BUCKET_COLORS.improved;
   const steps = toIdx - fromIdx;
   return steps === 1 ? BUCKET_COLORS.worse1 : BUCKET_COLORS.worse2;
 }
 
 function cellOpacity(value, maxVal) {
   if (!maxVal || !value) return 0.15;
-  return 0.2 + 0.75 * Math.min(value / maxVal, 1);
+  return 0.18 + 0.78 * Math.min(value / maxVal, 1);
 }
 
 function renderMigrationMatrix(data, fromWeek, toWeek) {
-  const wrap = document.getElementById('matrix-wrap');
-  const buckets = data.buckets;
-  const matrix = data.matrix;
+  renderMatrixInto('matrix-wrap', data, 'openMigrationDrawer');
+}
 
-  // Find max value for opacity scaling
+function renderRetentionWaterfall(data, fromWeek, toWeek) {
+  renderMatrixInto('ret-waterfall-wrap', data, 'openRetentionDrilldown');
+}
+
+function renderMatrixInto(wrapId, data, clickFn) {
+  const wrap    = document.getElementById(wrapId);
+  if (!wrap) return;
+  const buckets = data.buckets;
+  const matrix  = data.matrix;
+  if (!buckets || !buckets.length) {
+    wrap.innerHTML = '<p style="color:#94a3b8;text-align:center;padding:40px">No data for selected weeks.</p>';
+    return;
+  }
+
+  const rowTotal = {}, colTotal = {};
+  let grandTotal = 0;
+  buckets.forEach(fb => {
+    rowTotal[fb] = 0;
+    buckets.forEach(tb => {
+      const v = matrix[fb]?.[tb]?.value || 0;
+      rowTotal[fb] += v;
+      colTotal[tb]  = (colTotal[tb] || 0) + v;
+      grandTotal   += v;
+    });
+  });
+
   let maxVal = 0;
   buckets.forEach(fb => buckets.forEach(tb => {
     const v = matrix[fb]?.[tb]?.value || 0;
     if (v > maxVal) maxVal = v;
   }));
 
-  let html = '<div class="matrix-container"><table class="matrix-table">';
-  // Header row
-  html += '<thead><tr><th class="matrix-table corner" style="background:#0a1628">FROM \\ TO</th>';
-  buckets.forEach(b => { html += `<th class="col-header">${b}</th>`; });
-  html += '</tr></thead><tbody>';
+  const maxRowTotal = Math.max(...Object.values(rowTotal), 1);
+
+  let html = '<div class="matrix-container"><table class="matrix-table"><thead>';
+  html += `<tr>
+    <th class="matrix-corner">
+      <div class="corner-from">PRIOR WEEK</div>
+      <div class="corner-to">CURRENT WEEK &#8594;</div>
+    </th>`;
+  buckets.forEach(b => {
+    html += `<th class="col-header"><div class="col-header-label">${b}</div></th>`;
+  });
+  html += '<th class="col-header total-col">ROW TOTAL</th></tr></thead><tbody>';
 
   buckets.forEach((fb, fi) => {
-    html += `<tr><th class="row-header">${fb}</th>`;
+    const rt   = rowTotal[fb] || 0;
+    const barW = rt > 0 ? Math.round(rt / maxRowTotal * 100) : 0;
+    html += `<tr>
+      <th class="row-header">
+        <div class="row-header-label">${fb}</div>
+        <div class="row-bar-wrap"><div class="row-bar" style="width:${barW}%"></div></div>
+        <div class="row-header-total">${fmtDollar(rt)}</div>
+      </th>`;
+
     buckets.forEach((tb, ti) => {
       const cell = matrix[fb]?.[tb];
-      const val = cell?.value || 0;
-      const cnt = cell?.count || 0;
-      const pct = cell?.pct;
+      const val  = cell?.value || 0;
+      const cnt  = cell?.count || 0;
+      const pct  = cell?.pct ?? 0;
       const baseColor = cellColor(fi, ti, val);
+
       if (!baseColor || val === 0) {
-        html += `<td class="matrix-cell empty" data-from="${fb}" data-to="${tb}" data-val="0" data-cnt="0" data-pct="0">
-          <span style="color:#334155;font-size:10px">—</span></td>`;
+        html += `<td class="matrix-cell empty"
+          data-from="${fb}" data-to="${tb}"><span class="cell-empty-dash">—</span></td>`;
       } else {
-        const opacity = cellOpacity(val, maxVal);
-        const bg = hexWithOpacity(baseColor, opacity);
-        const textColor = opacity > 0.5 ? '#fff' : '#e2e8f0';
-        html += `<td class="matrix-cell"
-          style="background:${bg};color:${textColor};cursor:pointer"
-          data-from="${fb}" data-to="${tb}" data-val="${val}" data-cnt="${cnt}" data-pct="${pct ?? 0}"
+        const opacity   = cellOpacity(val, maxVal);
+        const bg        = hexWithOpacity(baseColor, opacity);
+        const textColor = opacity > 0.45 ? '#fff' : '#cbd5e1';
+        const diagClass = fi === ti ? ' cell-diagonal' : '';
+        const fbe = fb.replace(/'/g, "\\'"), tbe = tb.replace(/'/g, "\\'");
+        html += `<td class="matrix-cell${diagClass}"
+          style="background:${bg};color:${textColor}"
+          data-from="${fb}" data-to="${tb}" data-val="${val}" data-cnt="${cnt}" data-pct="${pct}"
           onmouseenter="showMatrixTip(event,this)" onmouseleave="hideMatrixTip()"
-          onclick="downloadMigration('${fb.replace(/'/g,"\\'")}','${tb.replace(/'/g,"\\'")}')">
+          onclick="${clickFn}('${fbe}','${tbe}')">
           <div class="cell-val">${fmtDollar(val)}</div>
           <div class="cell-cnt">${fmtNum(cnt)} enc</div>
-          ${pct != null ? `<div class="cell-pct">${pct}%</div>` : ''}
+          <div class="cell-pct">${pct}%</div>
         </td>`;
       }
     });
-    html += '</tr>';
+
+    html += `<td class="matrix-cell total-cell">
+      <div class="cell-val">${fmtDollar(rt)}</div>
+    </td></tr>`;
   });
 
+  const twbb = data.to_week_by_bucket || null;
+  html += '<tr><th class="row-header total-row-header">COL TOTAL</th>';
+  buckets.forEach(tb => {
+    const ct  = twbb ? (twbb[tb]?.total_balance || 0) : (colTotal[tb] || 0);
+    const sub = twbb ? `<div class="ct-sub">${fmtNum(twbb[tb]?.total_count || 0)} enc</div>` : '';
+    html += `<td class="matrix-cell total-cell"><div class="cell-val">${fmtDollar(ct)}</div>${sub}</td>`;
+  });
+  const grandDisplay = data.to_week_total_balance || grandTotal;
+  html += `<td class="matrix-cell total-cell grand"><div class="cell-val">${fmtDollar(grandDisplay)}</div></td></tr>`;
   html += '</tbody></table></div>';
   wrap.innerHTML = html;
 }
@@ -861,42 +1107,258 @@ function hexWithOpacity(hex, opacity) {
 }
 
 function showMatrixTip(e, cell) {
-  const tt = document.getElementById('matrix-tooltip');
+  const tt  = document.getElementById('matrix-tooltip');
   const from = cell.dataset.from, to = cell.dataset.to;
   const val = parseFloat(cell.dataset.val);
   const cnt = parseInt(cell.dataset.cnt);
   const pct = parseFloat(cell.dataset.pct);
+  const mov = from === to ? 'Stayed in bucket' : (to > from ? `${from} → ${to}` : `${from} → ${to} (improved)`);
   tt.innerHTML = `
     <div class="tt-title">${from} &rarr; ${to}</div>
     <div class="tt-row"><span>Balance</span><span>${fmtDollar(val)}</span></div>
     <div class="tt-row"><span>Encounters</span><span>${fmtNum(cnt)}</span></div>
-    <div class="tt-row"><span>% of From-Bucket</span><span>${pct}%</span></div>
-    <div class="tt-row"><span>Movement</span><span>${from === to ? '(stayed)' : `${from} → ${to}`}</span></div>
-    <div style="margin-top:6px;font-size:10px;color:#94a3b8;text-align:center">Click cell to download encounters</div>
+    <div class="tt-row"><span>% of Total AR (ex. Self Pay)</span><span>${pct}%</span></div>
+    <div style="margin-top:8px;font-size:10px;color:#38bdf8;text-align:center;border-top:1px solid rgba(255,255,255,0.1);padding-top:6px">
+      &#128065; Click to drill into ${fmtNum(cnt)} encounters
+    </div>
   `;
   tt.style.display = 'block';
-  tt.style.left = (e.clientX + 14) + 'px';
-  tt.style.top = (e.clientY - 10) + 'px';
+  tt.style.left    = (e.clientX + 14) + 'px';
+  tt.style.top     = (e.clientY - 10) + 'px';
 }
 function hideMatrixTip() {
   document.getElementById('matrix-tooltip').style.display = 'none';
 }
 
 function renderMigrationSummary(data, fromWeek, toWeek) {
-  const s = data.summary;
+  const s  = data.summary;
   const ne = data.new_encounters;
   const re = data.resolved_encounters;
-
-  setMCard('ms-aged', fmtDollar(s.aged_worse_balance), `${fmtNum(s.aged_worse_count)} encounters moved to older buckets`);
-  setMCard('ms-new', fmtDollar(ne.balance), `${fmtNum(ne.count)} new encounters entered ATB`);
-  setMCard('ms-resolved', fmtDollar(re.balance), `${fmtNum(re.count)} encounters resolved / removed`);
+  setMCard('ms-aged',       fmtDollar(s.aged_worse_balance),      `${fmtNum(s.aged_worse_count)} encounters moved to older buckets`);
+  setMCard('ms-stayed',     fmtDollar(s.stayed_balance),           `${fmtNum(s.stayed_count)} encounters held in same bucket`);
+  setMCard('ms-resolved',   fmtDollar(re.balance),                 `${fmtNum(re.count)} encounters resolved / removed`);
+  setMCard('ms-new',        fmtDollar(ne.balance),                 `${fmtNum(ne.count)} new encounters entered ATB`);
+  setMCard('ms-toweek-total', fmtDollar(data.to_week_total_balance), `Total ATB balance as of ${toWeek}`);
 }
 
 function setMCard(id, value, sub) {
   const el = document.getElementById(id);
   if (!el) return;
   el.querySelector('.ms-value').textContent = value;
-  el.querySelector('.ms-sub').textContent = sub;
+  el.querySelector('.ms-sub').textContent   = sub;
+}
+
+function renderToWeekDistribution(data, toWeek) {
+  const wrap = document.getElementById('toweek-dist-wrap');
+  if (!wrap || !data.to_week_by_bucket) return;
+  const byBkt   = data.to_week_by_bucket;
+  const buckets = data.buckets;
+  const totalAR = data.to_week_total_balance;
+  const maxBal  = Math.max(...buckets.map(tb => byBkt[tb]?.total_balance || 0), 1);
+
+  let rows = '';
+  buckets.forEach(tb => {
+    const row   = byBkt[tb] || {};
+    const total = row.total_balance || 0;
+    const roll  = row.rollover_balance || 0;
+    const newB  = row.new_balance || 0;
+    const rollW = total > 0 ? Math.round(roll / total * 100) : 0;
+    const barW  = Math.round(total / maxBal * 100);
+    rows += `<tr>
+      <td class="dist-bucket">${tb}</td>
+      <td class="dist-bar-cell">
+        <div class="dist-bar-track">
+          <div class="dist-bar-inner" style="width:${barW}%">
+            <div class="dist-bar-roll" style="width:${rollW}%"></div>
+            <div class="dist-bar-new" style="width:${100 - rollW}%"></div>
+          </div>
+        </div>
+      </td>
+      <td class="dist-num dist-total">${fmtDollar(total)}</td>
+      <td class="dist-num">${row.pct_of_total || 0}%</td>
+      <td class="dist-num dist-roll">${fmtDollar(roll)}</td>
+      <td class="dist-num dist-new">${fmtDollar(newB)}</td>
+      <td class="dist-num">${fmtNum(row.rollover_count || 0)}</td>
+      <td class="dist-num">${fmtNum(row.new_count || 0)}</td>
+    </tr>`;
+  });
+
+  wrap.innerHTML = `
+    <div class="card" style="margin-top:18px">
+      <div class="card-header">
+        <span class="card-title">To-Week ATB — Full Balance Distribution</span>
+        <span class="card-sub">As of ${fmtWeek(toWeek)} &nbsp;&middot;&nbsp; Total AR (ex. Self Pay): ${fmtDollar(totalAR)}</span>
+      </div>
+      <div class="dist-legend">
+        <span class="dist-leg-roll">&#9646; Rollover (continued from prior week)</span>
+        <span class="dist-leg-new">&#9646; New this week</span>
+      </div>
+      <div class="dist-table-wrap">
+        <table class="dist-table">
+          <thead><tr>
+            <th>Bucket</th><th>Composition</th><th>Total Balance</th>
+            <th>% of Total AR</th><th>Rollover $</th><th>New This Week $</th>
+            <th>Rollover Enc</th><th>New Enc</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+// ── MIGRATION DETAIL DRAWER ───────────────────────────────────
+
+function openMigrationDrawer(fromBucket, toBucket) {
+  hideMatrixTip();
+  _drawerFromBucket = fromBucket;
+  _drawerToBucket   = toBucket;
+  _drawerAllRows    = [];
+  _drawerSortCol    = 'to_balance';
+  _drawerSortAsc    = false;
+
+  const fi = _rolloverFromWeek, ti = _rolloverToWeek;
+
+  // Badge + title
+  const isSame    = fromBucket === toBucket;
+  const fromIdx   = _BUCKET_ORDER.indexOf(fromBucket);
+  const toIdx     = _BUCKET_ORDER.indexOf(toBucket);
+  const worsened  = toIdx > fromIdx && fromIdx >= 0 && toIdx >= 0;
+  const improved  = toIdx < fromIdx && fromIdx >= 0 && toIdx >= 0;
+  const badgeText = isSame ? 'STAYED' : worsened ? 'AGED' : 'IMPROVED';
+  const badgeCls  = isSame ? 'badge-stayed' : worsened ? 'badge-aged' : 'badge-improved';
+
+  document.getElementById('mig-drawer-badge').textContent  = badgeText;
+  document.getElementById('mig-drawer-badge').className    = `mig-drawer-badge ${badgeCls}`;
+  document.getElementById('mig-drawer-title').textContent  = `${fromBucket}  →  ${toBucket}`;
+  document.getElementById('mig-drawer-sub').textContent    = `${fmtWeek(fi)} → ${fmtWeek(ti)}`;
+  document.getElementById('mig-drawer-body').innerHTML     =
+    '<div style="padding:40px;text-align:center;color:#94a3b8"><div class="spinner" style="margin:0 auto 12px"></div>Loading encounters…</div>';
+  document.getElementById('mig-drawer-search').value = '';
+
+  // Reset stats
+  ['mds-count','mds-total','mds-avg','mds-change'].forEach(id => {
+    document.getElementById(id).querySelector('.mds-val').textContent = '—';
+  });
+
+  document.getElementById('mig-drawer').classList.add('open');
+  document.getElementById('mig-drawer-overlay').classList.add('visible');
+
+  const params = `from=${encodeURIComponent(fi)}&to=${encodeURIComponent(ti)}&from_bucket=${encodeURIComponent(fromBucket)}&to_bucket=${encodeURIComponent(toBucket)}`;
+  fetch(apiUrl('/api/migration/detail', params))
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) { document.getElementById('mig-drawer-body').innerHTML = `<p style="color:#f87171;padding:20px">${data.error}</p>`; return; }
+      _drawerAllRows = data.rows || [];
+      renderDrawerStats(_drawerAllRows);
+      renderDrawerTable(_drawerAllRows);
+    })
+    .catch(err => {
+      document.getElementById('mig-drawer-body').innerHTML = `<p style="color:#f87171;padding:20px">Failed to load detail.</p>`;
+    });
+}
+
+const _BUCKET_ORDER = ['Not Aged','DNFB','0-30','31-60','61-90','91-120','121-150','151-180','181-210','211-240','241-270','271-300','301-330','331-365','366+'];
+
+function closeMigrationDrawer() {
+  document.getElementById('mig-drawer').classList.remove('open');
+  document.getElementById('mig-drawer-overlay').classList.remove('visible');
+}
+
+function renderDrawerStats(rows) {
+  const count     = rows.length;
+  const total     = rows.reduce((s, r) => s + (r.to_balance || 0), 0);
+  const avg       = count ? total / count : 0;
+  const netChange = rows.reduce((s, r) => s + (r.balance_change || 0), 0);
+  document.getElementById('mds-count').querySelector('.mds-val').textContent  = fmtNum(count);
+  document.getElementById('mds-total').querySelector('.mds-val').textContent  = fmtDollar(total);
+  document.getElementById('mds-avg').querySelector('.mds-val').textContent    = fmtDollar(avg);
+  const chEl = document.getElementById('mds-change').querySelector('.mds-val');
+  chEl.textContent = (netChange >= 0 ? '+' : '') + fmtDollar(netChange);
+  chEl.style.color = netChange >= 0 ? '#f87171' : '#4ade80';
+}
+
+function filterDrawerTable() {
+  const q = (document.getElementById('mig-drawer-search')?.value || '').toLowerCase().trim();
+  const filtered = q
+    ? _drawerAllRows.filter(r =>
+        r.enc.toLowerCase().includes(q) ||
+        (r['Responsible Health Plan'] || '').toLowerCase().includes(q) ||
+        (r['Responsible Financial Class'] || '').toLowerCase().includes(q) ||
+        (r['First Claim Number'] || '').toLowerCase().includes(q) ||
+        (r['Last Claim Number'] || '').toLowerCase().includes(q))
+    : _drawerAllRows;
+  renderDrawerTable(filtered);
+}
+
+function sortDrawerBy(col) {
+  if (_drawerSortCol === col) { _drawerSortAsc = !_drawerSortAsc; }
+  else { _drawerSortCol = col; _drawerSortAsc = col === 'enc'; }
+  filterDrawerTable();
+}
+
+function renderDrawerTable(rows) {
+  const col  = _drawerSortCol;
+  const asc  = _drawerSortAsc;
+  const sorted = [...rows].sort((a, b) => {
+    const av = a[col] ?? '', bv = b[col] ?? '';
+    const n = typeof av === 'number' ? (av - bv) : String(av).localeCompare(String(bv));
+    return asc ? n : -n;
+  });
+
+  const hasFCN = rows.some(r => r['First Claim Number']);
+  const hasLCN = rows.some(r => r['Last Claim Number']);
+
+  const th = (label, col_key) => {
+    const active = _drawerSortCol === col_key;
+    const arrow  = active ? (_drawerSortAsc ? ' ▲' : ' ▼') : '';
+    return `<th class="dt-th${active ? ' dt-th-active' : ''}" onclick="sortDrawerBy('${col_key}')">${label}${arrow}</th>`;
+  };
+
+  let html = `<table class="detail-table">
+    <thead><tr>
+      ${th('Enc #','enc')}
+      ${hasFCN ? th('First Claim #','First Claim Number') : ''}
+      ${hasLCN ? th('Last Claim #','Last Claim Number') : ''}
+      ${th('From Bucket','from_bucket')}
+      ${th('To Bucket','to_bucket')}
+      ${th('Movement','movement')}
+      ${th('Prior Balance','from_balance')}
+      ${th('Current Balance','to_balance')}
+      ${th('Balance Δ','balance_change')}
+      ${th('Health Plan','Responsible Health Plan')}
+      ${th('Fin Class','Responsible Financial Class')}
+      ${th('Discharge Date','Discharge Date')}
+    </tr></thead><tbody>`;
+
+  sorted.forEach((r, i) => {
+    const chg    = r.balance_change || 0;
+    const chgCls = chg > 0 ? 'cell-worse' : chg < 0 ? 'cell-better' : '';
+    const movCls = r.movement === 'Stayed' ? 'mov-stayed' : r.movement?.startsWith('Aged') ? 'mov-aged' : 'mov-improved';
+    html += `<tr class="${i % 2 === 1 ? 'dt-row-alt' : ''}">
+      <td class="dt-enc">${r.enc}</td>
+      ${hasFCN ? `<td class="dt-claim">${r['First Claim Number'] || '—'}</td>` : ''}
+      ${hasLCN ? `<td class="dt-claim">${r['Last Claim Number'] || '—'}</td>` : ''}
+      <td><span class="bucket-pill">${r.from_bucket}</span></td>
+      <td><span class="bucket-pill">${r.to_bucket}</span></td>
+      <td><span class="mov-badge ${movCls}">${r.movement}</span></td>
+      <td class="dt-num">${fmtDollar(r.from_balance)}</td>
+      <td class="dt-num dt-bal">${fmtDollar(r.to_balance)}</td>
+      <td class="dt-num ${chgCls}">${chg >= 0 ? '+' : ''}${fmtDollar(chg)}</td>
+      <td class="dt-plan">${r['Responsible Health Plan'] || '—'}</td>
+      <td class="dt-plan">${r['Responsible Financial Class'] || '—'}</td>
+      <td class="dt-date">${r['Discharge Date'] || '—'}</td>
+    </tr>`;
+  });
+
+  if (!sorted.length) {
+    html += '<tr><td colspan="20" style="text-align:center;padding:40px;color:#94a3b8">No encounters match your search.</td></tr>';
+  }
+  html += '</tbody></table>';
+  document.getElementById('mig-drawer-body').innerHTML = html;
+}
+
+function downloadMigrationFromDrawer() {
+  downloadMigration(_drawerFromBucket, _drawerToBucket);
 }
 
 // ── TAB 3: ATB BIFURCATION ────────────────────────────────────

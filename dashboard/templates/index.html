@@ -167,6 +167,27 @@
             </div>
           </div>
 
+          <div class="filter-group">
+            <span class="filter-group-label">Balance Type:</span>
+            <div class="fd-wrap" id="fd-bt">
+              <button class="fd-trigger" onclick="fdToggle('fd-bt')">
+                <span class="fd-trigger-text" id="fd-bt-text">All</span>
+                <span class="fd-trigger-count" id="fd-bt-count" style="display:none"></span>
+                <span class="fd-trigger-arrow">&#9660;</span>
+              </button>
+              <div class="fd-panel" id="fd-bt-panel">
+                <div class="fd-search-wrap">
+                  <input class="fd-search" type="text" placeholder="Search..." oninput="fdSearch('fd-bt',this.value)">
+                </div>
+                <div class="fd-actions">
+                  <button class="fd-action-btn" onclick="fdSelectAll('fd-bt')">Select All</button>
+                  <button class="fd-action-btn" onclick="fdClear('fd-bt')">Clear</button>
+                </div>
+                <div class="fd-options" id="fd-bt-options"></div>
+              </div>
+            </div>
+          </div>
+
           <div class="filter-active-bar" id="filter-active-bar">
             <span id="filter-active-tags"></span>
             <button class="filter-clear-btn" onclick="clearAllFilters()" title="Clear all filters">&#10005;</button>
@@ -177,6 +198,7 @@
         <div class="tab-nav">
           <button class="tab-btn active" data-tab="trending" onclick="switchTab('trending')">Volume Trending</button>
           <button class="tab-btn" data-tab="rollover" onclick="switchTab('rollover')">Aging Rollover</button>
+          <button class="tab-btn" data-tab="retention" onclick="switchTab('retention')">ATB Retention</button>
           <button class="tab-btn" data-tab="bifurcation" onclick="switchTab('bifurcation')">ATB Bifurcation</button>
           <button class="tab-btn" data-tab="contributors" onclick="switchTab('contributors')">90+ Contributors</button>
           <button class="tab-btn" data-tab="denials" onclick="switchTab('denials')">Open Denials</button>
@@ -284,7 +306,41 @@
               <span class="ctrl-label">To Week:</span>
               <select class="ctrl-select" id="sel-to-week" onchange="loadRollover()"></select>
             </div>
-            <button class="btn-download" onclick="downloadMigration()" title="Download all migration encounters for selected weeks">&#8659; Download All</button>
+            <button class="btn-download" onclick="downloadMigration()" title="Download all migration encounters">&#8659; Export All</button>
+          </div>
+
+          <!-- KPI Banner -->
+          <div class="migration-summary" id="migration-kpi-bar">
+            <div class="msummary-card danger" id="ms-aged">
+              <div class="ms-icon">&#8599;</div>
+              <div class="ms-label">Aged Into Older Buckets</div>
+              <div class="ms-value">—</div>
+              <div class="ms-sub">—</div>
+            </div>
+            <div class="msummary-card stayed" id="ms-stayed">
+              <div class="ms-icon">&#8644;</div>
+              <div class="ms-label">Same Bucket Rollover</div>
+              <div class="ms-value">—</div>
+              <div class="ms-sub">—</div>
+            </div>
+            <div class="msummary-card success" id="ms-resolved">
+              <div class="ms-icon">&#10003;</div>
+              <div class="ms-label">Resolved / Dropped</div>
+              <div class="ms-value">—</div>
+              <div class="ms-sub">—</div>
+            </div>
+            <div class="msummary-card info" id="ms-new">
+              <div class="ms-icon">&#43;</div>
+              <div class="ms-label">New This Week</div>
+              <div class="ms-value">—</div>
+              <div class="ms-sub">—</div>
+            </div>
+            <div class="msummary-card neutral" id="ms-toweek-total">
+              <div class="ms-icon">&#9776;</div>
+              <div class="ms-label">To Week ATB Total</div>
+              <div class="ms-value">—</div>
+              <div class="ms-sub">—</div>
+            </div>
           </div>
 
           <!-- Narrative -->
@@ -296,55 +352,108 @@
             <div id="rollover-summary"></div>
           </div>
 
-          <!-- Matrix Legend -->
-          <div class="matrix-legend">
-            <div style="display:flex;align-items:center;gap:6px">
-              <div class="legend-dot" style="background:#2563eb"></div> Stayed in same bucket
-            </div>
-            <div style="display:flex;align-items:center;gap:6px">
-              <div class="legend-dot" style="background:#16a34a"></div> Moved to younger bucket (improved)
-            </div>
-            <div style="display:flex;align-items:center;gap:6px">
-              <div class="legend-dot" style="background:#d97706"></div> Aged 1 bucket (warning)
-            </div>
-            <div style="display:flex;align-items:center;gap:6px">
-              <div class="legend-dot" style="background:#dc2626"></div> Aged 2+ buckets (critical)
-            </div>
-          </div>
-
-          <!-- Matrix -->
-          <div class="chart-card">
+          <!-- Matrix Card -->
+          <div class="chart-card matrix-card">
             <div class="chart-card-header">
               <div>
-                <div class="chart-card-title">Aging Migration Matrix</div>
-                <div class="chart-card-sub">Row = Discharge Aging Bucket (prior week) &nbsp;|&nbsp; Column = Bucket (current week) &nbsp;|&nbsp; Cell = Balance / Encounter Count / % of From-Bucket</div>
+                <div class="chart-card-title">&#9650; Aging Migration Waterfall</div>
+                <div class="chart-card-sub">Row = Prior Week Bucket &nbsp;&#8594;&nbsp; Column = Current Week Bucket &nbsp;|&nbsp; Click any cell to drill into encounter detail</div>
+              </div>
+              <div class="matrix-legend">
+                <span class="legend-pill" style="background:rgba(37,99,235,0.25);border-color:#2563eb">&#8644; Stayed</span>
+                <span class="legend-pill" style="background:rgba(22,163,74,0.25);border-color:#16a34a">&#8595; Improved</span>
+                <span class="legend-pill" style="background:rgba(217,119,6,0.25);border-color:#d97706">&#8599; Aged 1</span>
+                <span class="legend-pill" style="background:rgba(220,38,38,0.25);border-color:#dc2626">&#8648; Aged 2+</span>
               </div>
             </div>
             <div id="matrix-wrap">
-              <p style="color:#94a3b8;padding:20px;text-align:center">Select weeks to load matrix.</p>
+              <p style="color:#94a3b8;padding:40px;text-align:center;font-size:14px">Select weeks above to load the waterfall.</p>
             </div>
           </div>
 
-          <!-- Summary Cards -->
-          <div class="migration-summary">
-            <div class="msummary-card danger" id="ms-aged">
-              <div class="ms-label">Aged Into Older Buckets</div>
-              <div class="ms-value">—</div>
-              <div class="ms-sub">—</div>
-            </div>
-            <div class="msummary-card info" id="ms-new">
-              <div class="ms-label">New This Week</div>
-              <div class="ms-value">—</div>
-              <div class="ms-sub">—</div>
-            </div>
-            <div class="msummary-card success" id="ms-resolved">
-              <div class="ms-label">Resolved / Dropped</div>
-              <div class="ms-value">—</div>
-              <div class="ms-sub">—</div>
-            </div>
-          </div>
+          <!-- To-Week ATB Full Distribution -->
+          <div id="toweek-dist-wrap"></div>
 
         </div><!-- /tab-rollover -->
+
+        <!-- ── TAB: ATB RETENTION ────────────────────────── -->
+        <div class="tab-pane" id="tab-retention" style="display:none">
+
+          <!-- Controls -->
+          <div class="controls-bar">
+            <div class="ctrl-group">
+              <span class="ctrl-label">From Week (Cohort):</span>
+              <select class="ctrl-select" id="ret-from-week" onchange="loadRetention()"></select>
+            </div>
+            <span class="ctrl-arrow">&#8594;</span>
+            <div class="ctrl-group">
+              <span class="ctrl-label">To Week (Current):</span>
+              <select class="ctrl-select" id="ret-to-week" onchange="loadRetention()"></select>
+            </div>
+          </div>
+
+          <!-- KPI Banner -->
+          <div class="retention-kpi-bar" id="ret-kpi-bar">
+            <div class="ret-kpi-card" id="ret-kpi-cohort">
+              <div class="ret-kpi-label">From-Week Cohort</div>
+              <div class="ret-kpi-value">—</div>
+              <div class="ret-kpi-sub">total encounters</div>
+            </div>
+            <div class="ret-kpi-card highlight-card" id="ret-kpi-survived">
+              <div class="ret-kpi-label">Still in ATB</div>
+              <div class="ret-kpi-value">—</div>
+              <div class="ret-kpi-sub">survived to current week</div>
+            </div>
+            <div class="ret-kpi-card danger-card" id="ret-kpi-resolved">
+              <div class="ret-kpi-label">Resolved / Dropped</div>
+              <div class="ret-kpi-value">—</div>
+              <div class="ret-kpi-sub">not in current ATB</div>
+            </div>
+            <div class="ret-kpi-card" id="ret-kpi-rate">
+              <div class="ret-kpi-label">Retention Rate</div>
+              <div class="ret-kpi-value">—</div>
+              <div class="ret-kpi-sub">of cohort still on ATB</div>
+            </div>
+            <div class="ret-kpi-card" id="ret-kpi-bal">
+              <div class="ret-kpi-label">Survived Balance</div>
+              <div class="ret-kpi-value">—</div>
+              <div class="ret-kpi-sub">current week balance of cohort</div>
+            </div>
+          </div>
+
+          <!-- Waterfall Bars -->
+          <div class="chart-card" style="margin-top:14px">
+            <div class="chart-card-header">
+              <div>
+                <div class="chart-card-title">&#9650; Cohort Aging Migration Waterfall</div>
+                <div class="chart-card-sub">Row = Prior Week Bucket (survived cohort only) &nbsp;&#8594;&nbsp; Column = Current Week Bucket &nbsp;|&nbsp; Click any cell to drill into encounter detail</div>
+              </div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <span class="legend-pill" style="background:rgba(37,99,235,0.25);border-color:#2563eb">&#8644; Stayed</span>
+                <span class="legend-pill" style="background:rgba(22,163,74,0.25);border-color:#16a34a">&#8595; Improved</span>
+                <span class="legend-pill" style="background:rgba(217,119,6,0.25);border-color:#d97706">&#8599; Aged 1</span>
+                <span class="legend-pill" style="background:rgba(220,38,38,0.25);border-color:#dc2626">&#8648; Aged 2+</span>
+              </div>
+            </div>
+            <div id="ret-waterfall-wrap" style="padding:16px 20px">
+              <p style="color:#94a3b8;text-align:center;padding:40px;font-size:14px">Select weeks above to load the retention waterfall.</p>
+            </div>
+          </div>
+
+          <!-- To-Week Bucket Summary Table -->
+          <div class="chart-card" style="margin-top:14px" id="ret-summary-card">
+            <div class="chart-card-header">
+              <div>
+                <div class="chart-card-title">Current Week Bucket Distribution of Survived Cohort</div>
+                <div class="chart-card-sub">Where the From-Week cohort is sitting in the To Week ATB</div>
+              </div>
+            </div>
+            <div id="ret-summary-wrap" style="overflow-x:auto">
+              <p style="color:#64748b;padding:20px;font-size:12px;text-align:center">Load data above to see bucket distribution.</p>
+            </div>
+          </div>
+
+        </div><!-- /tab-retention -->
 
         <!-- ── TAB 3: ATB BIFURCATION ─────────────────────── -->
         <div class="tab-pane" id="tab-bifurcation" style="display:none">
@@ -1120,7 +1229,37 @@
   </div><!-- /main -->
 </div><!-- /app -->
 
+<!-- ── MIGRATION DETAIL DRAWER ─────────────────────────────── -->
+<div id="mig-drawer-overlay" class="mig-drawer-overlay" onclick="closeMigrationDrawer()"></div>
+<div id="mig-drawer" class="mig-drawer">
+  <div class="mig-drawer-header">
+    <div class="mig-drawer-title-wrap">
+      <div id="mig-drawer-badge" class="mig-drawer-badge">—</div>
+      <div>
+        <div id="mig-drawer-title" class="mig-drawer-title">Encounter Detail</div>
+        <div id="mig-drawer-sub" class="mig-drawer-sub">—</div>
+      </div>
+    </div>
+    <div class="mig-drawer-actions">
+      <button class="btn-download" id="mig-drawer-dl-btn" onclick="downloadMigrationFromDrawer()" style="font-size:11px;padding:5px 10px">&#8659; Export</button>
+      <button class="mig-drawer-close" onclick="closeMigrationDrawer()">&#10005;</button>
+    </div>
+  </div>
+  <div class="mig-drawer-stats" id="mig-drawer-stats">
+    <div class="mds-card" id="mds-count"><div class="mds-label">Encounters</div><div class="mds-val">—</div></div>
+    <div class="mds-card" id="mds-total"><div class="mds-label">Total Balance</div><div class="mds-val">—</div></div>
+    <div class="mds-card" id="mds-avg"><div class="mds-label">Avg Balance</div><div class="mds-val">—</div></div>
+    <div class="mds-card" id="mds-change"><div class="mds-label">Net Balance Change</div><div class="mds-val">—</div></div>
+  </div>
+  <div class="mig-drawer-search-bar">
+    <input type="text" id="mig-drawer-search" class="mig-search-input" placeholder="&#128269; Search encounter # or health plan..." oninput="filterDrawerTable()" />
+  </div>
+  <div class="mig-drawer-body" id="mig-drawer-body">
+    <p style="color:#94a3b8;text-align:center;padding:60px 20px">Click a matrix cell to view encounter detail.</p>
+  </div>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
-<script src="/static/js/dashboard.js?v=2"></script>
+<script src="/static/js/dashboard.js?v=7"></script>
 </body>
 </html>
