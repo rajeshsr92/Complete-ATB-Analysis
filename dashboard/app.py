@@ -1065,10 +1065,10 @@ def _friday_auto_refresh():
         _time.sleep(3600)  # Check again in 1 hour
 
 
+# Start background loading regardless of whether run directly or via gunicorn
+threading.Thread(target=_load_all_clients, daemon=True).start()
+threading.Thread(target=_friday_auto_refresh, daemon=True, name='friday-refresh').start()
+
 if __name__ == '__main__':
-    t = threading.Thread(target=_load_all_clients, daemon=True)
-    t.start()
-    fr = threading.Thread(target=_friday_auto_refresh, daemon=True, name='friday-refresh')
-    fr.start()
     port = int(os.environ.get('PORT', 5000))
     app.run(debug=False, host='0.0.0.0', port=port, use_reloader=False)
