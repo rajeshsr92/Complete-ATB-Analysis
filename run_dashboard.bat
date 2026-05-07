@@ -5,7 +5,7 @@ echo   Medicare KPI Dashboard - RevWorks
 echo ============================================
 echo.
 
-set PYTHON="C:\Program Files\Python313\python.exe"
+set PYTHON="C:\Program Files\Python311\python.exe"
 set MEDICARE_LIB_PATH=%LOCALAPPDATA%\medicare_dash_lib
 
 echo Checking Python...
