@@ -1235,3 +1235,54 @@ body { font-family: 'Inter', 'Segoe UI', sans-serif; background: var(--bg-dark);
 .dist-leg-roll { color: #93c5fd; }
 .dist-leg-new  { color: #86efac; }
 .ct-sub { font-size: 10px; color: #64748b; margin-top: 2px; }
+
+/* ── FOOTER BAR ───────────────────────────────────────────── */
+#app-footer {
+  position: fixed;
+  bottom: 0;
+  left: var(--sidebar-w);
+  right: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 20px;
+  background: #0a1220;
+  border-top: 1px solid #f59e0b;
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+.footer-disclaimer {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #fbbf24;
+  background: rgba(245,158,11,0.12);
+  border: 1px solid rgba(245,158,11,0.4);
+  border-radius: 6px;
+  padding: 5px 12px;
+  flex: 1;
+}
+.footer-disclaimer-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+  color: #f59e0b;
+}
+.footer-disclaimer em {
+  font-style: italic;
+  font-weight: 600;
+}
+.footer-credit {
+  color: #94a3b8;
+  white-space: nowrap;
+  font-size: 11px;
+  border-left: 1px solid #1e3a5f;
+  padding-left: 16px;
+}
+.footer-credit strong {
+  color: #0ea5e9;
+  font-weight: 600;
+}
+/* push main content up so footer doesn't overlap it */
+#main { padding-bottom: 42px; }
