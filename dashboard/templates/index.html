@@ -1259,7 +1259,8 @@
   </div>
 </div>
 
-<!-- ── FOOTER BAR ─────────────────────────────────────────────── -->
+<!-- ── FOOTER BAR (Railway only) ──────────────────────────────── -->
+{% if show_footer %}
 <div id="app-footer">
   <div class="footer-disclaimer">
     <span class="footer-disclaimer-icon">&#9888;</span>
@@ -1269,6 +1270,7 @@
     Developed by <strong>Rajesh Mullapudi</strong>
   </div>
 </div>
+{% endif %}
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
 <script src="/static/js/dashboard.js?v=7"></script>

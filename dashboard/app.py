@@ -181,7 +181,8 @@ def _apply_all_filters(df, req):
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    on_railway = bool(os.environ.get('RAILWAY_ENVIRONMENT'))
+    return render_template('index.html', show_footer=on_railway)
 
 
 @app.route('/api/clients')
