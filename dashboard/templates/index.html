@@ -6,7 +6,7 @@
 <title>ATB KPI Dashboard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/css/dashboard.css?v=8">
+<link rel="stylesheet" href="/static/css/dashboard.css?v=9">
 
 <!--[if gte mso 9]><xml>
 <mso:CustomDocumentProperties>
@@ -1313,11 +1313,12 @@
 
           <!-- Data Table Panel -->
           <div class="section-card" id="wb-table-panel" style="display:none">
-            <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
-              <span class="section-title">Unworked ATB Claims</span>
-              <span id="wb-row-count" style="font-size:12px;color:#64748b"></span>
-              <button class="insight-dl-btn" style="margin-left:auto;padding:3px 10px;font-size:12px"
-                      onclick="downloadUntouchedClaims()" title="Download full untouched claims list">
+            <div class="wb-table-header">
+              <div class="wb-table-title">
+                <span id="wb-table-label">Unworked ATB Claims</span>
+                <span id="wb-row-badge" class="wb-row-badge"></span>
+              </div>
+              <button class="wb-dl-btn" onclick="downloadUntouchedClaims()" title="Download full list">
                 &#8659; Download All
               </button>
             </div>
@@ -1327,7 +1328,6 @@
                 <tbody id="wb-table-body"></tbody>
               </table>
             </div>
-            <div id="wb-table-note" style="font-size:11px;color:#64748b;margin-top:6px"></div>
           </div>
 
         </div><!-- /workables-tab-untouched -->
@@ -1390,6 +1390,6 @@
 {% endif %}
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
-<script src="/static/js/dashboard.js?v=17"></script>
+<script src="/static/js/dashboard.js?v=20"></script>
 </body>
 </html>

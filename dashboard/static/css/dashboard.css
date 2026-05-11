@@ -1355,3 +1355,45 @@ body { font-family: 'Inter', 'Segoe UI', sans-serif; background: var(--bg-dark);
   background: var(--bg-hover, var(--border));
   color: var(--text-primary);
 }
+
+/* ── Workables table header bar ── */
+.wb-table-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.wb-table-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.wb-row-badge {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: rgba(99,102,241,0.12);
+  color: var(--accent);
+  white-space: nowrap;
+}
+.wb-dl-btn {
+  font-size: 11px;
+  padding: 4px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.wb-dl-btn:hover {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}

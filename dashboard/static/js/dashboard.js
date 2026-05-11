@@ -15,6 +15,7 @@ let capForecastChart    = null;
 let allWeeks = [];
 let currentClient = '';
 let highDollarMode = false;
+let currentSection = 'medicare';
 
 // Active filter state
 const activeFilters = { rfc: [], rhp: [], bt: [], cs: [], dac: [], ctac: [] };
@@ -116,6 +117,43 @@ function clearAllFilters() {
   fdClear('fd-cs');
   fdClear('fd-dac');
   fdClear('fd-ctac');
+}
+
+// Set a filter dropdown to specific values and sync UI — does NOT trigger a data reload
+function _setFdValues(fdId, values) {
+  const key    = FD_MAP[fdId];
+  const valSet = new Set(values);
+  document.querySelectorAll(`#${fdId}-options input`).forEach(cb => {
+    cb.checked = valSet.has(cb.value);
+  });
+  activeFilters[key] = [...document.querySelectorAll(`#${fdId}-options input:checked`)].map(cb => cb.value);
+  const cnt     = activeFilters[key].length;
+  const countEl = document.getElementById(fdId + '-count');
+  const textEl  = document.getElementById(fdId + '-text');
+  if (textEl && countEl) {
+    if (cnt === 0) {
+      textEl.textContent = 'All'; countEl.style.display = 'none';
+    } else {
+      textEl.textContent = cnt === 1 ? activeFilters[key][0] : `${cnt} selected`;
+      countEl.textContent = cnt; countEl.style.display = '';
+    }
+  }
+}
+
+// Apply Workables-specific defaults: CS = 3 statuses, DAC/CTAC = all except excluded
+function applyWorkablesDefaults() {
+  const WB_CS_DEFAULTS  = new Set(['Denied Pending Review', 'Transmitted', 'Transmitted by Crossover']);
+  const WB_DAC_EXCLUDE  = new Set(['DNFB', 'Not Aged']);
+  const WB_CTAC_EXCLUDE = new Set(['0-30', 'Not Transmitted']);
+
+  _setFdValues('fd-cs',
+    [...document.querySelectorAll('#fd-cs-options input')].map(cb => cb.value).filter(v => WB_CS_DEFAULTS.has(v)));
+  _setFdValues('fd-dac',
+    [...document.querySelectorAll('#fd-dac-options input')].map(cb => cb.value).filter(v => !WB_DAC_EXCLUDE.has(v)));
+  _setFdValues('fd-ctac',
+    [...document.querySelectorAll('#fd-ctac-options input')].map(cb => cb.value).filter(v => !WB_CTAC_EXCLUDE.has(v)));
+
+  updateFilterActiveBadge();
 }
 
 function updateFilterActiveBadge() {
@@ -392,6 +430,15 @@ function switchTab(id) {
 }
 
 function switchSection(id) {
+  // Leaving Workables — clear its bespoke filters so ATB Analysis starts clean
+  if (currentSection === 'workables' && id !== 'workables') {
+    _setFdValues('fd-cs',   []);
+    _setFdValues('fd-dac',  []);
+    _setFdValues('fd-ctac', []);
+    updateFilterActiveBadge();
+  }
+  currentSection = id;
+
   document.querySelectorAll('.nav-item[data-section]').forEach(n => n.classList.toggle('active', n.dataset.section === id));
   // Both 'medicare' and 'highDollar' render the same content pane
   const paneId = (id === 'highDollar') ? 'medicare' : id;
@@ -2839,6 +2886,7 @@ function loadWorkables() {
   wbExcludeWq = false;
   document.getElementById('wb-toggle-all')?.classList.add('active');
   document.getElementById('wb-toggle-open')?.classList.remove('active');
+  applyWorkablesDefaults();
   populateWbWeekSelector();
   const today = new Date().toISOString().split('T')[0];
   const picker = document.getElementById('wb-date-picker');
@@ -2930,11 +2978,11 @@ const WB_COLS = [
 ];
 
 function renderWbTable(rows, rowCount, summary) {
-  const panel = document.getElementById('wb-table-panel');
-  const thead = document.getElementById('wb-table-head');
-  const tbody = document.getElementById('wb-table-body');
-  const noteEl = document.getElementById('wb-table-note');
-  const countEl = document.getElementById('wb-row-count');
+  const panel  = document.getElementById('wb-table-panel');
+  const thead  = document.getElementById('wb-table-head');
+  const tbody  = document.getElementById('wb-table-body');
+  const badge  = document.getElementById('wb-row-badge');
+  const label  = document.getElementById('wb-table-label');
   if (!panel || !thead || !tbody) return;
 
   if (!rows || !rows.length) {
@@ -2943,9 +2991,10 @@ function renderWbTable(rows, rowCount, summary) {
   }
   panel.style.display = '';
 
-  if (countEl) countEl.textContent = rowCount > rows.length
-    ? `(showing first ${rows.length} of ${rowCount.toLocaleString()} records)`
-    : `(${rowCount.toLocaleString()} record${rowCount !== 1 ? 's' : ''})`;
+  if (label) label.textContent = wbExcludeWq ? 'Open ATB Claims' : 'Unworked ATB Claims';
+  if (badge) badge.textContent = rowCount > rows.length
+    ? `${rows.length.toLocaleString()} of ${rowCount.toLocaleString()} shown`
+    : `${rowCount.toLocaleString()} record${rowCount !== 1 ? 's' : ''}`;
 
   // Determine columns: prefer WB_COLS order, include any extras
   const available = Object.keys(rows[0] || {});
@@ -2962,10 +3011,6 @@ function renderWbTable(rows, rowCount, summary) {
     const val   = isNum && v != null ? fmtDollar(v) : disp;
     return `<td${style}>${val}</td>`;
   }).join('')}</tr>`).join('');
-
-  if (noteEl) noteEl.textContent = rowCount > rows.length
-    ? `Showing first ${rows.length} rows. Use "Download All" for the complete list.`
-    : '';
 }
 
 function downloadUntouchedClaims() {
