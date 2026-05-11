@@ -16,22 +16,34 @@ let allWeeks = [];
 let currentClient = '';
 let highDollarMode = false;
 
-// Active filter state: {rfc: [...], rhp: [...], bt: [...]}
-const activeFilters = { rfc: [], rhp: [], bt: [] };
+// Active filter state
+const activeFilters = { rfc: [], rhp: [], bt: [], cs: [], dac: [], ctac: [] };
+
+// Self-pay detection (mirrors analytics.py _SELF_PAY_TERMS)
+const _SELF_PAY_TERMS_JS = new Set([
+  'self pay','self-pay','self_pay','selfpay','cash pay',
+  'private pay','self','selfpay/private pay','private','uninsured'
+]);
+function _isSelfPay(name) {
+  return _SELF_PAY_TERMS_JS.has((name || '').toLowerCase().trim());
+}
 
 // ── FILTER PARAM BUILDER ──────────────────────────────────────
 function filterParams() {
   const parts = [];
-  if (activeFilters.rfc.length) parts.push('resp_fin_class=' + encodeURIComponent(activeFilters.rfc.join(',')));
-  if (activeFilters.rhp.length) parts.push('resp_health_plan=' + encodeURIComponent(activeFilters.rhp.join(',')));
-  if (activeFilters.bt.length)  parts.push('balance_type=' + encodeURIComponent(activeFilters.bt.join(',')));
+  if (activeFilters.rfc.length)  parts.push('resp_fin_class='  + encodeURIComponent(activeFilters.rfc.join(',')));
+  if (activeFilters.rhp.length)  parts.push('resp_health_plan=' + encodeURIComponent(activeFilters.rhp.join(',')));
+  if (activeFilters.bt.length)   parts.push('balance_type='    + encodeURIComponent(activeFilters.bt.join(',')));
+  if (activeFilters.cs.length)   parts.push('claim_status='    + encodeURIComponent(activeFilters.cs.join(',')));
+  if (activeFilters.dac.length)  parts.push('dac='             + encodeURIComponent(activeFilters.dac.join(',')));
+  if (activeFilters.ctac.length) parts.push('ctac='            + encodeURIComponent(activeFilters.ctac.join(',')));
   if (highDollarMode) parts.push('high_dollar=true');
   return parts.join('&');
 }
 
 // ── MULTISELECT DROPDOWN COMPONENT ───────────────────────────
 // fdId: 'fd-rfc', 'fd-rhp', or 'fd-bt', maps to activeFilters keys
-const FD_MAP = { 'fd-rfc': 'rfc', 'fd-rhp': 'rhp', 'fd-bt': 'bt' };
+const FD_MAP = { 'fd-rfc': 'rfc', 'fd-rhp': 'rhp', 'fd-bt': 'bt', 'fd-cs': 'cs', 'fd-dac': 'dac', 'fd-ctac': 'ctac' };
 
 function fdBuild(fdId, values) {
   const opts = document.getElementById(fdId + '-options');
@@ -101,45 +113,76 @@ function clearAllFilters() {
   fdClear('fd-rfc');
   fdClear('fd-rhp');
   fdClear('fd-bt');
+  fdClear('fd-cs');
+  fdClear('fd-dac');
+  fdClear('fd-ctac');
 }
 
 function updateFilterActiveBadge() {
   const bar = document.getElementById('filter-active-bar');
   const tags = document.getElementById('filter-active-tags');
-  const total = activeFilters.rfc.length + activeFilters.rhp.length + activeFilters.bt.length;
+  const total = activeFilters.rfc.length + activeFilters.rhp.length + activeFilters.bt.length
+              + activeFilters.cs.length + activeFilters.dac.length + activeFilters.ctac.length;
   if (total === 0) {
     bar.classList.remove('visible');
     return;
   }
   bar.classList.add('visible');
   const parts = [];
-  if (activeFilters.rfc.length) parts.push(`Fin.Class: ${activeFilters.rfc.length} selected`);
-  if (activeFilters.rhp.length) parts.push(`Health Plan: ${activeFilters.rhp.length} selected`);
-  if (activeFilters.bt.length)  parts.push(`Bal.Type: ${activeFilters.bt.join(', ')}`);
+  if (activeFilters.rfc.length)  parts.push(`Fin.Class: ${activeFilters.rfc.length} selected`);
+  if (activeFilters.rhp.length)  parts.push(`Health Plan: ${activeFilters.rhp.length} selected`);
+  if (activeFilters.bt.length)   parts.push(`Bal.Type: ${activeFilters.bt.join(', ')}`);
+  if (activeFilters.cs.length)   parts.push(`Claim Status: ${activeFilters.cs.length} selected`);
+  if (activeFilters.dac.length)  parts.push(`DAC: ${activeFilters.dac.length} selected`);
+  if (activeFilters.ctac.length) parts.push(`CTAC: ${activeFilters.ctac.length} selected`);
   tags.innerHTML = parts.map(p => `<span class="filter-tag">${p}</span>`).join('');
 }
 
 function loadFilterOptions() {
-  fetch(apiUrl('/api/filters'))
+  return fetch(apiUrl('/api/filters'))
     .then(r => r.json())
     .then(d => {
-      if (d.resp_fin_class)  fdBuild('fd-rfc', d.resp_fin_class);
-      if (d.resp_health_plan) fdBuild('fd-rhp', d.resp_health_plan);
-      if (d.balance_type)    fdBuild('fd-bt', d.balance_type);
+      if (d.resp_fin_class)   fdBuild('fd-rfc',  d.resp_fin_class);
+      if (d.resp_health_plan) fdBuild('fd-rhp',  d.resp_health_plan);
+      if (d.balance_type)     fdBuild('fd-bt',   d.balance_type);
+      if (d.claim_status)     fdBuild('fd-cs',   d.claim_status);
+      if (d.dac)              fdBuild('fd-dac',  d.dac);
+      if (d.ctac)             fdBuild('fd-ctac', d.ctac);
 
-      // Restore previously checked values (or pre-select AR - Debit by default)
-      ['fd-rfc', 'fd-rhp', 'fd-bt'].forEach(fdId => {
+      // Apply defaults / restore — sync state without triggering per-filter reloads
+      ['fd-rfc', 'fd-rhp', 'fd-bt', 'fd-cs', 'fd-dac', 'fd-ctac'].forEach(fdId => {
         const key = FD_MAP[fdId];
         if (activeFilters[key].length) {
           document.querySelectorAll(`#${fdId}-options input`).forEach(cb => {
             cb.checked = activeFilters[key].includes(cb.value);
           });
+        } else if (fdId === 'fd-rfc') {
+          const nonSP = (d.resp_fin_class || []).filter(v => !_isSelfPay(v));
+          document.querySelectorAll('#fd-rfc-options input').forEach(cb => {
+            cb.checked = nonSP.includes(cb.value);
+          });
         } else if (fdId === 'fd-bt') {
-          // Default: pre-select AR - Debit
-          const arDebit = document.querySelector(`#fd-bt-options input[value="AR - Debit"]`);
-          if (arDebit) { arDebit.checked = true; fdChange('fd-bt'); }
+          const arDebit = document.querySelector('#fd-bt-options input[value="AR - Debit"]');
+          if (arDebit) arDebit.checked = true;
+        }
+        // Sync activeFilters to match checkbox state
+        activeFilters[key] = [...document.querySelectorAll(`#${fdId}-options input:checked`)].map(cb => cb.value);
+        // Update dropdown label
+        const cnt = activeFilters[key].length;
+        const countEl = document.getElementById(fdId + '-count');
+        const textEl  = document.getElementById(fdId + '-text');
+        if (textEl && countEl) {
+          if (cnt === 0) {
+            textEl.textContent = 'All';
+            countEl.style.display = 'none';
+          } else {
+            textEl.textContent = cnt === 1 ? activeFilters[key][0] : `${cnt} selected`;
+            countEl.textContent = cnt;
+            countEl.style.display = '';
+          }
         }
       });
+      updateFilterActiveBadge();
     })
     .catch(() => {});
 }
@@ -181,6 +224,12 @@ function apiUrl(path, extra) {
 }
 
 function reloadActiveTab() {
+  // If Workables section is active, reload it instead of ATB tabs
+  const workablesPane = document.getElementById('section-workables');
+  if (workablesPane && workablesPane.style.display !== 'none') {
+    loadUntouchedClaims();
+    return;
+  }
   const active = document.querySelector('.tab-btn.active');
   switchTab(active ? active.dataset.tab : 'trending');
 }
@@ -218,6 +267,12 @@ function switchClient(name) {
   if (sub) sub.textContent = name.replace(/_/g, ' ');
   const sidebarSub = document.getElementById('sidebar-client-sub');
   if (sidebarSub) sidebarSub.textContent = name.replace(/_/g, ' ');
+  // If Workables section is visible, reload it; otherwise reload ATB tab
+  const workablesPane = document.getElementById('section-workables');
+  if (workablesPane && workablesPane.style.display !== 'none') {
+    loadWorkables();
+    return;
+  }
   const activeTab = document.querySelector('.tab-btn.active');
   const tabId = activeTab ? activeTab.dataset.tab : 'trending';
   pollClientStatus(tabId);
@@ -301,11 +356,13 @@ function pollClientStatus(tabId, onDone) {
       document.getElementById('loading-overlay').style.display = 'none';
       allWeeks = d.weeks || [];
       populateWeekSelectors();
-      loadFilterOptions();
       loadBillingEntities();
-      switchTab(tabId || 'trending');
-      if (highDollarMode) loadHDThreshold();
-      if (typeof onDone === 'function') onDone();
+      // Load filters first, then switch tab once so the initial view already has defaults applied
+      loadFilterOptions().then(() => {
+        switchTab(tabId || 'trending');
+        if (highDollarMode) loadHDThreshold();
+        if (typeof onDone === 'function') onDone();
+      });
       // Keep updating topbar badge while other clients finish
       _startBackgroundProgressPoll();
     }
@@ -339,6 +396,9 @@ function switchSection(id) {
   // Both 'medicare' and 'highDollar' render the same content pane
   const paneId = (id === 'highDollar') ? 'medicare' : id;
   document.querySelectorAll('.section-pane').forEach(p => p.style.display = p.id === 'section-' + paneId ? 'block' : 'none');
+  // Show shared filter bar for ATB and Workables sections
+  const filterBar = document.getElementById('filter-bar');
+  if (filterBar) filterBar.style.display = (id === 'medicare' || id === 'highDollar' || id === 'workables') ? '' : 'none';
 
   highDollarMode = (id === 'highDollar');
   const banner = document.getElementById('hd-threshold-banner');
@@ -357,6 +417,7 @@ function switchSection(id) {
     return;
   }
   if (highDollarMode) loadHDThreshold();
+  if (id === 'workables') { loadWorkables(); return; }
   reloadActiveTab();
 }
 
@@ -552,18 +613,49 @@ function downloadCashActionPlan(payer) {
   triggerDownload(apiUrl('/api/download/cash-action-plan', extra));
 }
 
+function downloadCashActionPlanAll() {
+  const week = _dlWeek();
+  triggerDownload(apiUrl('/api/download/cash-action-plan-all', `week=${encodeURIComponent(week)}`));
+}
+
+function downloadCashActionInsight(filterKey, filterMeta) {
+  const week = _dlWeek();
+  let extra  = `week=${encodeURIComponent(week)}&insight_filter=${encodeURIComponent(filterKey || 'full_pool')}`;
+  if (filterKey === 'top5_payers' && Array.isArray(filterMeta)) {
+    filterMeta.forEach(p => { extra += `&top5=${encodeURIComponent(p)}`; });
+  }
+  triggerDownload(apiUrl('/api/download/cash-action-plan', extra));
+}
+
 // ── SHARED: TAB SUMMARY PANEL ────────────────────────────────
-function renderTabSummary(panelId, points) {
+function renderTabSummary(panelId, points, downloadFn) {
   const el = document.getElementById(panelId);
   if (!el) return;
   const panel = el.parentElement;
   if (!points || !points.length) { if (panel) panel.style.display = 'none'; return; }
   if (panel) panel.style.display = '';
-  el.innerHTML = points.map(p => `
+  el.innerHTML = points.map((p, i) => {
+    const btnId = `insight-dl-${panelId}-${i}`;
+    const dlBtn = downloadFn
+      ? `<button id="${btnId}" class="insight-dl-btn" title="Download raw data for this insight">&#8659;</button>`
+      : '';
+    const pctBadge = (p.pct != null && p.pct > 0)
+      ? `<span class="insight-pct">${p.pct.toFixed(1)}%</span>`
+      : '';
+    return `
     <div class="kp-item">
       <div class="kp-dot ${p.type || 'info'}"></div>
       <div class="kp-text">${p.text}</div>
-    </div>`).join('');
+      ${pctBadge}
+      ${dlBtn}
+    </div>`;
+  }).join('');
+  if (downloadFn) {
+    points.forEach((p, i) => {
+      const btn = document.getElementById(`insight-dl-${panelId}-${i}`);
+      if (btn) btn.addEventListener('click', (e) => { e.stopPropagation(); downloadFn(p); });
+    });
+  }
 }
 
 // ── TAB 1: TRENDING ──────────────────────────────────────────
@@ -576,7 +668,7 @@ function loadTrending() {
       renderKpiCards(rows);
       renderTrendChart(rows);
       renderTrendTable(rows);
-      renderTabSummary('trending-summary', data.summary || []);
+      renderTabSummary('trending-summary', data.summary || [], () => downloadTrending());
       const latestWeek = rows[rows.length - 1]?.week;
       if (latestWeek) loadBalanceGroups(latestWeek);
     })
@@ -951,7 +1043,7 @@ function loadRollover() {
       renderMigrationMatrix(data, fromWeek, toWeek);
       renderMigrationSummary(data, fromWeek, toWeek);
       renderMigrationNarrative(data, fromWeek, toWeek);
-      renderTabSummary('rollover-summary', data.summary_points || []);
+      renderTabSummary('rollover-summary', data.summary_points || [], () => downloadMigration());
       renderToWeekDistribution(data, toWeek);
     })
     .catch(() => {});
@@ -1374,7 +1466,7 @@ function loadBifurcation() {
       renderBifurBarChart(data);
       renderBifurDonutChart(data);
       renderBifurTable(data);
-      renderTabSummary('bifur-summary', data.summary_points || []);
+      renderTabSummary('bifur-summary', data.summary_points || [], () => downloadBifurcation());
       renderUnbilledPanel(data.unbilled || {});
       loadVelocity(week);
     })
@@ -1640,7 +1732,7 @@ function loadContributors() {
     .then(r => r.json())
     .then(data => {
       if (!data || data.error) return;
-      renderTabSummary('key-points-list', data.key_points || []);
+      renderTabSummary('key-points-list', data.key_points || [], () => downloadContributors());
       renderContribKpis(data.summary);
       renderRfcBarChart(data.by_fin_class || []);
       renderRolledChart(data.rolled_by_fin_class || []);
@@ -1822,7 +1914,7 @@ function loadDenials() {
         return;
       }
       if (content) content.style.display = '';
-      renderTabSummary('denial-summary-list', data.summary_points || []);
+      renderTabSummary('denial-summary-list', data.summary_points || [], () => downloadDenials());
       renderDenialKpis(data);
       renderDenialResolution(data.resolution || {});
       renderDenialParetoChart(data.by_code || []);
@@ -2165,7 +2257,7 @@ function loadDenialVelocity() {
         return;
       }
       if (content) content.style.display = '';
-      renderTabSummary('dv-summary-list', data.summary_points || []);
+      renderTabSummary('dv-summary-list', data.summary_points || [], () => downloadDenialVelocity());
       renderDvKpis(data.kpis || {});
       renderDvTrendChart(data.trend || []);
       renderDvHeatTable(data);
@@ -2430,7 +2522,8 @@ function loadCashActionPlan() {
       renderCapWaterfall(data.waterfall || []);
       renderCapForecast(data.forecast || {});
       renderCapFinClassRankings(data.fin_class_rankings || []);
-      renderTabSummary('cap-insights-list', data.action_insights || []);
+      renderTabSummary('cap-insights-list', data.action_insights || [],
+        (p) => downloadCashActionInsight(p.filter_key, p.filter_meta));
       if (panel && (data.action_insights || []).length) panel.style.display = '';
     })
     .catch(() => {});
@@ -2725,7 +2818,171 @@ function renderCapFinClassRankings(rows) {
   wrap.innerHTML = html;
 }
 
+// ── WORKABLES ─────────────────────────────────────────────────
+
+let wbExcludeWq = false;
+
+function switchWorkablesTab(id) {
+  document.querySelectorAll('#section-workables .tab-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.tab === id));
+  document.getElementById('workables-tab-' + id).style.display = '';
+}
+
+function switchWbMode(exclude) {
+  wbExcludeWq = exclude;
+  document.getElementById('wb-toggle-all')?.classList.toggle('active',  !exclude);
+  document.getElementById('wb-toggle-open')?.classList.toggle('active', exclude);
+  loadUntouchedClaims();
+}
+
+function loadWorkables() {
+  wbExcludeWq = false;
+  document.getElementById('wb-toggle-all')?.classList.add('active');
+  document.getElementById('wb-toggle-open')?.classList.remove('active');
+  populateWbWeekSelector();
+  const today = new Date().toISOString().split('T')[0];
+  const picker = document.getElementById('wb-date-picker');
+  if (picker && !picker.value) picker.value = today;
+  loadUntouchedClaims();
+}
+
+function populateWbWeekSelector() {
+  const sel = document.getElementById('wb-week-select');
+  if (!sel || !allWeeks.length) return;
+  const current = sel.value;
+  sel.innerHTML = [...allWeeks].reverse().map(w =>
+    `<option value="${w}">${fmtWeek(w)}</option>`
+  ).join('');
+  if (current && allWeeks.includes(current)) sel.value = current;
+}
+
+function loadUntouchedClaims() {
+  const date = document.getElementById('wb-date-picker')?.value || '';
+  const week = document.getElementById('wb-week-select')?.value  || '';
+  const extra = [
+    date ? `date=${encodeURIComponent(date)}` : '',
+    week ? `week=${encodeURIComponent(week)}` : '',
+    wbExcludeWq ? 'exclude_wq=true' : '',
+  ].filter(Boolean).join('&');
+
+  fetch(apiUrl('/api/workables/untouched-claims', extra))
+    .then(r => { if (!r.ok) return r.text().then(t => { throw new Error(t.slice(0,200)); }); return r.json(); })
+    .then(data => {
+      if (!data || data.error) {
+        const grid = document.getElementById('wb-kpi-grid');
+        const panel = document.getElementById('wb-insights-panel');
+        const tbl = document.getElementById('wb-table-panel');
+        if (panel) panel.style.display = 'none';
+        if (tbl) tbl.style.display = 'none';
+        if (grid) {
+          const msg = data && data.snca_only
+            ? '&#128274; Production data is only available for <strong>Seneca Health (SNCA CA)</strong>. Please select that client to use this view.'
+            : `Error: ${(data && data.error) || 'Failed to load'}`;
+          const color = data && data.snca_only ? '#94a3b8' : '#ef4444';
+          grid.innerHTML = `<div style="color:${color};padding:16px;font-size:13px;line-height:1.6">${msg}</div>`;
+        }
+        return;
+      }
+      renderWbKpis(data.summary || {});
+      renderTabSummary('wb-insights-list', data.key_points || [], null);
+      const insPanel = document.getElementById('wb-insights-panel');
+      if (insPanel) insPanel.style.display = (data.key_points || []).length ? '' : 'none';
+      renderWbTable(data.rows || [], data.row_count, data.summary || {});
+    })
+    .catch(err => {
+      const grid = document.getElementById('wb-kpi-grid');
+      if (grid) grid.innerHTML = `<div style="color:#ef4444;padding:12px;font-size:13px">Error: ${err.message || 'Failed to load untouched claims data.'}</div>`;
+    });
+}
+
+function renderWbKpis(s) {
+  const grid = document.getElementById('wb-kpi-grid');
+  if (!grid) return;
+  const hasUnworked = (s.unworked_count || 0) > 0;
+  const label2 = wbExcludeWq ? 'Open Claims'    : 'Unworked Claims';
+  const label3 = wbExcludeWq ? 'Open Balance'   : 'Unworked Balance';
+  const card4  = wbExcludeWq
+    ? { label: 'WQ Excluded',       value: fmtNum(s.wq_excluded_count),  sub: fmtDollar(s.wq_excluded_bal) + ' balance excluded' }
+    : { label: 'Production Window', value: fmtNum(s.worked_nums_count),   sub: s.prod_window || 'worked claim numbers' };
+  const cards = [
+    { label: 'Total ATB Claims', value: fmtNum(s.total_atb),      sub: 'claims in selected week/filters' },
+    { label: label2,             value: fmtNum(s.unworked_count),  sub: `${s.unworked_pct ?? '—'}% of ATB claims`,    cls: hasUnworked ? 'color:#ef4444' : '' },
+    { label: label3,             value: fmtDollar(s.unworked_bal), sub: `${s.unworked_bal_pct ?? '—'}% of ATB balance`, cls: hasUnworked ? 'color:#ef4444' : '' },
+    card4,
+  ];
+  grid.innerHTML = cards.map(c => `
+    <div class="kpi-card">
+      <div class="kpi-label">${c.label}</div>
+      <div class="kpi-value" style="${c.cls || ''}">${c.value}</div>
+      <div class="kpi-delta neutral">${c.sub}</div>
+    </div>`).join('');
+}
+
+const WB_COLS = [
+  'Encounter Number',
+  'Responsible Financial Class', 'Responsible Health Plan', 'Primary Health Plan',
+  'Balance Amount', 'Balance Type',
+  'Discharge Aging Category', 'Claim Status',
+  'First Claim Number', 'Last Claim Number',
+  'Discharge Date', 'Balance Group',
+  'Claim Transmission Age Category', 'Unbilled Aging Category',
+  'Work Flow State',
+];
+
+function renderWbTable(rows, rowCount, summary) {
+  const panel = document.getElementById('wb-table-panel');
+  const thead = document.getElementById('wb-table-head');
+  const tbody = document.getElementById('wb-table-body');
+  const noteEl = document.getElementById('wb-table-note');
+  const countEl = document.getElementById('wb-row-count');
+  if (!panel || !thead || !tbody) return;
+
+  if (!rows || !rows.length) {
+    panel.style.display = 'none';
+    return;
+  }
+  panel.style.display = '';
+
+  if (countEl) countEl.textContent = rowCount > rows.length
+    ? `(showing first ${rows.length} of ${rowCount.toLocaleString()} records)`
+    : `(${rowCount.toLocaleString()} record${rowCount !== 1 ? 's' : ''})`;
+
+  // Determine columns: prefer WB_COLS order, include any extras
+  const available = Object.keys(rows[0] || {});
+  const ordered = WB_COLS.filter(c => available.includes(c));
+  const extras  = available.filter(c => !WB_COLS.includes(c) && !c.startsWith('_'));
+  const cols    = [...ordered, ...extras];
+
+  thead.innerHTML = `<tr>${cols.map(c => `<th>${c}</th>`).join('')}</tr>`;
+  tbody.innerHTML = rows.map(r => `<tr>${cols.map(c => {
+    const v = r[c];
+    const disp = v == null ? '' : String(v);
+    const isNum = c === 'Balance Amount' || c === 'Billed Amount';
+    const style = isNum ? ' style="text-align:right"' : '';
+    const val   = isNum && v != null ? fmtDollar(v) : disp;
+    return `<td${style}>${val}</td>`;
+  }).join('')}</tr>`).join('');
+
+  if (noteEl) noteEl.textContent = rowCount > rows.length
+    ? `Showing first ${rows.length} rows. Use "Download All" for the complete list.`
+    : '';
+}
+
+function downloadUntouchedClaims() {
+  const date = document.getElementById('wb-date-picker')?.value || '';
+  const week = document.getElementById('wb-week-select')?.value  || '';
+  const extra = [
+    date ? `date=${encodeURIComponent(date)}` : '',
+    week ? `week=${encodeURIComponent(week)}` : '',
+    wbExcludeWq ? 'exclude_wq=true' : '',
+  ].filter(Boolean).join('&');
+  triggerDownload(apiUrl('/api/download/workables-untouched', extra));
+}
+
 // ── BOOT ─────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
+  // Show filter bar on initial load (ATB Analysis is default section)
+  const filterBar = document.getElementById('filter-bar');
+  if (filterBar) filterBar.style.display = '';
   pollLoading();
 });

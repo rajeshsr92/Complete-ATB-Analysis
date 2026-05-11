@@ -34,7 +34,7 @@ import threading
 import pandas as pd
 from flask import Flask, render_template, jsonify, request, send_file
 from data_loader import (load_all_atb_files, discover_clients, get_filter_values,
-                          get_billing_entities)
+                          get_billing_entities, load_production_file, load_work_queue_file)
 from analytics import (wow_trending, trending_summary,
                         atb_retention_analysis,
                         aging_migration, rollover_summary, migration_cell_detail,
@@ -44,6 +44,7 @@ from analytics import (wow_trending, trending_summary,
                         denial_analysis, denial_velocity,
                         cash_collection_action_plan,
                         get_priority_encounter_df,
+                        untouched_claims_analysis,
                         OVER_90_BUCKETS, BUCKET_INDEX, _DENIAL_EMPTY)
 
 if getattr(sys, 'frozen', False):
@@ -64,6 +65,35 @@ def no_cache(response):
 
 _clients = {}
 _clients_lock = threading.Lock()
+
+_production_dfs  = {}
+_production_lock = threading.Lock()
+
+_work_queue_dfs  = {}
+_work_queue_lock = threading.Lock()
+
+
+def _get_production_df(client_name):
+    with _production_lock:
+        if client_name not in _production_dfs:
+            _production_dfs[client_name] = load_production_file(client_name)
+        return _production_dfs[client_name]
+
+
+def _get_work_queue_df(client_name):
+    with _work_queue_lock:
+        if client_name not in _work_queue_dfs:
+            _work_queue_dfs[client_name] = load_work_queue_file(client_name)
+        return _work_queue_dfs[client_name]
+
+
+def _inject_pct(points, total_ar):
+    """Add pct = balance / total_ar * 100 to each point that carries a 'balance' key."""
+    if not total_ar:
+        return
+    for p in points:
+        if 'balance' in p and p['balance'] is not None and 'pct' not in p:
+            p['pct'] = round(float(p['balance']) / float(total_ar) * 100, 1)
 
 
 def _get_state(name):
@@ -150,16 +180,25 @@ def _resolve_client(name=None):
 
 
 def _apply_filters(df, req):
-    """Apply RFC, Health Plan, and Balance Type filters from request args."""
-    rfc = [v for v in req.args.get('resp_fin_class', '').split(',') if v]
-    rhp = [v for v in req.args.get('resp_health_plan', '').split(',') if v]
-    bt  = [v for v in req.args.get('balance_type', '').split(',') if v]
+    """Apply RFC, Health Plan, Balance Type, Claim Status, DAC, and CTAC filters."""
+    rfc  = [v for v in req.args.get('resp_fin_class', '').split(',') if v]
+    rhp  = [v for v in req.args.get('resp_health_plan', '').split(',') if v]
+    bt   = [v for v in req.args.get('balance_type', '').split(',') if v]
+    cs   = [v for v in req.args.get('claim_status', '').split(',') if v]
+    dac  = [v for v in req.args.get('dac', '').split(',') if v]
+    ctac = [v for v in req.args.get('ctac', '').split(',') if v]
     if rfc:
         df = df[df['Responsible Financial Class'].astype(str).isin(rfc)]
     if rhp:
         df = df[df['Responsible Health Plan'].astype(str).isin(rhp)]
     if bt and 'Balance Type' in df.columns:
         df = df[df['Balance Type'].astype(str).str.strip().isin(bt)]
+    if cs and 'Claim Status' in df.columns:
+        df = df[df['Claim Status'].astype(str).isin(cs)]
+    if dac and 'Discharge Aging Category' in df.columns:
+        df = df[df['Discharge Aging Category'].astype(str).isin(dac)]
+    if ctac and 'Claim Transmission Age Category' in df.columns:
+        df = df[df['Claim Transmission Age Category'].astype(str).isin(ctac)]
     return df
 
 
@@ -274,7 +313,12 @@ def api_trending():
         return jsonify({'error': 'Data still loading'}), 503
     filtered = {w: _apply_all_filters(df, request) for w, df in state['weekly_data'].items()}
     rows = wow_trending(filtered)
-    return jsonify({'rows': rows, 'summary': trending_summary(rows)})
+    summary = trending_summary(rows)
+    weeks = state['weeks']
+    if weeks:
+        total_ar = float(filtered[weeks[-1]]['Balance Amount'].sum())
+        _inject_pct(summary, total_ar)
+    return jsonify({'rows': rows, 'summary': summary})
 
 
 @app.route('/api/migration')
@@ -295,7 +339,9 @@ def api_migration():
     a = _apply_all_filters(wd[from_week], request)
     b = _apply_all_filters(wd[to_week], request)
     result = aging_migration(a, b)
-    result['summary_points'] = rollover_summary(result)
+    summary_pts = rollover_summary(result)
+    _inject_pct(summary_pts, float(b['Balance Amount'].sum()))
+    result['summary_points'] = summary_pts
     return jsonify(result)
 
 
@@ -364,7 +410,9 @@ def api_bifurcation():
     bifur_result = atb_bifurcation(curr, prior)
     unbilled = unbilled_analysis(curr, prior)
     bifur_result['unbilled'] = unbilled
-    bifur_result['summary_points'] = bifurcation_summary(bifur_result, unbilled)
+    summary_pts = bifurcation_summary(bifur_result, unbilled)
+    _inject_pct(summary_pts, float(curr['Balance Amount'].sum()))
+    bifur_result['summary_points'] = summary_pts
     return jsonify(bifur_result)
 
 
@@ -388,7 +436,9 @@ def api_aging_contributors():
     curr = _apply_all_filters(wd[week], request)
     prior = _apply_all_filters(wd[prior_week], request)
     top_n = int(request.args.get('top_n', 15))
-    return jsonify(aging_contributors(curr, prior, top_n=top_n))
+    result = aging_contributors(curr, prior, top_n=top_n)
+    _inject_pct(result.get('key_points', []), float(curr['Balance Amount'].sum()))
+    return jsonify(result)
 
 
 @app.route('/api/high-dollar-threshold')
@@ -505,7 +555,9 @@ def api_denials():
     prior_week = weeks[idx - 1] if idx > 0 else week
     curr  = _apply_all_filters(wd[week], request)
     prior = _apply_all_filters(wd[prior_week], request)
-    return jsonify(denial_analysis(curr, prior))
+    result = denial_analysis(curr, prior)
+    _inject_pct(result.get('summary_points', []), float(curr['Balance Amount'].sum()))
+    return jsonify(result)
 
 
 @app.route('/api/denial-velocity')
@@ -517,7 +569,11 @@ def api_denial_velocity():
     if state['loading']:
         return jsonify({'error': 'Data still loading'}), 503
     filtered = {w: _apply_all_filters(df, request) for w, df in state['weekly_data'].items()}
-    return jsonify(denial_velocity(filtered))
+    result = denial_velocity(filtered)
+    weeks = state['weeks']
+    if weeks:
+        _inject_pct(result.get('summary_points', []), float(filtered[weeks[-1]]['Balance Amount'].sum()))
+    return jsonify(result)
 
 
 @app.route('/api/cash-action-plan')
@@ -589,6 +645,9 @@ def _make_excel_response(df, title, context_str, filename):
         c.alignment = Alignment(horizontal='center', vertical='center')
     ws.row_dimensions[4].height = 16
 
+    # Sanitize: convert pd.NA / nullable-int NA → None so openpyxl can write them
+    df = df.astype(object).where(df.notna(), other=None)
+
     # Data rows (row 5+)
     for ri, row_data in enumerate(df.itertuples(index=False), 5):
         ws.append(list(row_data))
@@ -600,12 +659,12 @@ def _make_excel_response(df, title, context_str, filename):
             c.alignment = Alignment(horizontal='left', vertical='center')
         ws.row_dimensions[ri].height = 13
 
-    # Auto-width (capped at 42)
+    # Auto-width (capped at 42) — df already sanitized above, so v is None or a real value
     for ci, col_name in enumerate(df.columns, 1):
         col_letter = get_column_letter(ci)
         max_len = max(
             len(str(col_name)),
-            max((len(str(v)) for v in df.iloc[:, ci - 1] if v is not None and str(v) != 'nan'), default=0)
+            max((len(str(v)) for v in df.iloc[:, ci - 1] if v is not None), default=0)
         )
         ws.column_dimensions[col_letter].width = min(max_len + 2, 42)
 
@@ -999,6 +1058,112 @@ def download_denial_velocity():
     return _make_excel_response(df, title, ctx, fname)
 
 
+_INSIGHT_FILTER_LABELS = {
+    '90_denied':           '90+ Denied Claims',
+    '61_90_rollover':      '61-90 Day Rollover Risk',
+    'quick_win':           'Quick Win — Fresh Denials 91-120d',
+    'timely_filing':       'Timely Filing Risk (CRITICAL & High)',
+    'full_pool':           'Full Priority Pool',
+    'dnfb':                'DNFB — Internal Billing',
+    'aged_denials':        'Aged Denials 90+ Days',
+    'top5_payers':         'Top 5 Payers by Priority',
+    'ar_scope_highval':    'AR Scope High-Dollar (>$2K)',
+    'claims_proc_highval': 'Claims Processing High-Dollar (>$2K)',
+    'dnfb_client_highval': 'DNFB Client Scope High-Dollar (>$2K)',
+}
+
+# Prefix added to extras list for display; kept separate from ws.title (no colons allowed)
+_INSIGHT_FILTER_SCOPE = {k: f'Scope: {v}' for k, v in _INSIGHT_FILTER_LABELS.items()}
+
+
+def _get_claimed_encounters(df_curr, insight_filter):
+    """Return encounter IDs already claimed by higher-priority insight downloads."""
+    from analytics import INSIGHT_PRIORITY_ORDER
+    fk_base = insight_filter.split(':')[0] if ':' in insight_filter else insight_filter
+    if fk_base not in INSIGHT_PRIORITY_ORDER:
+        return set()
+    rank = INSIGHT_PRIORITY_ORDER.index(fk_base)
+    claimed = set()
+    for higher_fk in INSIGHT_PRIORITY_ORDER[:rank]:
+        try:
+            higher_df = get_priority_encounter_df(df_curr, higher_fk)
+            claimed.update(higher_df['Encounter Number'].astype(str))
+        except Exception:
+            pass
+    return claimed
+
+@app.route('/api/download/cash-action-plan-all')
+def download_cash_action_plan_all():
+    """Download all Cash Collection Action Insights combined into one file."""
+    client = request.args.get('client')
+    name, state = _resolve_client(client)
+    if isinstance(state, tuple):
+        return state
+    if state['loading']:
+        return jsonify({'error': 'Data still loading'}), 503
+    wd    = state['weekly_data']
+    weeks = state['weeks']
+    if not weeks:
+        return jsonify({'error': 'No data'}), 404
+    week = request.args.get('week')
+    if not week or week not in wd:
+        week = weeks[-1]
+    idx        = weeks.index(week)
+    prior_week = weeks[idx - 1] if idx > 0 else week
+    filtered_all = {w: _apply_all_filters(df, request) for w, df in wd.items()}
+    curr  = filtered_all[week]
+    prior = filtered_all[prior_week]
+
+    plan     = cash_collection_action_plan(filtered_all, curr, prior)
+    insights = plan.get('action_insights', [])
+    if not insights:
+        return jsonify({'error': 'No insights available'}), 404
+
+    priority_cols = ['Insight Reason', 'Encounter Number', 'Responsible Health Plan',
+                     'Responsible Financial Class', 'Balance Amount',
+                     'Discharge Aging Category', 'Claim Status', 'Days Outstanding',
+                     'Last Denial Code and Reason', 'Last Denial Date', 'Denial Age (Days)',
+                     'TF Risk', 'Recommended Action', 'Discharge Date']
+
+    seen_encs = set()
+    chunks    = []
+    for p in insights:
+        fk      = p.get('filter_key', '') or ''
+        # Use full insight text as the reason label so the user sees the complete description
+        label   = p.get('text', '') or _INSIGHT_FILTER_LABELS.get(fk.split(':')[0] if ':' in fk else fk, fk)
+
+        try:
+            df_chunk = get_priority_encounter_df(curr, fk)
+        except Exception:
+            continue
+        if df_chunk.empty:
+            continue
+
+        # Deduplicate: each encounter attributed to its first (highest-priority) insight
+        mask = ~df_chunk['Encounter Number'].astype(str).isin(seen_encs)
+        df_chunk = df_chunk[mask].copy()
+        seen_encs.update(df_chunk['Encounter Number'].astype(str))
+        if df_chunk.empty:
+            continue
+
+        df_chunk.insert(0, 'Insight Reason', label)
+        chunks.append(df_chunk)
+
+    if not chunks:
+        return jsonify({'error': 'No encounter data'}), 404
+
+    combined = pd.concat(chunks, ignore_index=True)
+    # Sort: keep insight display order, then balance descending within each group
+    reason_order = {(p.get('text', '') or ''): i for i, p in enumerate(insights)}
+    combined['_sort'] = combined['Insight Reason'].map(reason_order).fillna(999)
+    combined = combined.sort_values(['_sort', 'Balance Amount'], ascending=[True, False]).drop(columns=['_sort'])
+
+    combined = _select_download_cols(combined, priority_cols)
+    ctx   = _download_context(name, week, [f'All {len(insights)} Cash Collection Action Insights — Combined', 'Each encounter assigned to its highest-priority insight'])
+    fname = f'{name}_CashActionInsights_All_{week}.xlsx'.replace(' ', '_')
+    return _make_excel_response(combined, 'All Cash Collection Action Insights', ctx, fname)
+
+
 @app.route('/api/download/cash-action-plan')
 def download_cash_action_plan():
     client = request.args.get('client')
@@ -1011,24 +1176,173 @@ def download_cash_action_plan():
     weeks = state['weeks']
     if not weeks:
         return jsonify({'error': 'No data'}), 404
-    week  = request.args.get('week')
-    payer = request.args.get('payer', '')
+    week           = request.args.get('week')
+    payer          = request.args.get('payer', '')
+    insight_filter = request.args.get('insight_filter', '').strip()
     if not week or week not in wd:
         week = weeks[-1]
     curr = _apply_all_filters(wd[week], request)
-    df   = get_priority_encounter_df(curr)
-    extras = ['Scope: 90+ or Denied Pool']
-    if payer:
+
+    # insight_filter drives the data slice; legacy payer param still works
+    active_filter = insight_filter or ('full_pool' if not payer else '')
+    df = get_priority_encounter_df(curr, active_filter)
+
+    extras = [_INSIGHT_FILTER_SCOPE.get(
+        active_filter.split(':')[0] if ':' in active_filter else active_filter,
+        'Scope: Priority Recovery Pool'
+    )]
+    if ':' in active_filter:
+        extras.append(f'Filter: {active_filter.split(":", 1)[1]}')
+
+    # top5_payers: filter pool to the named payers passed via filter_meta
+    top5 = request.args.getlist('top5')
+    if active_filter == 'top5_payers' and top5 and 'Responsible Health Plan' in df.columns:
+        df = df[df['Responsible Health Plan'].astype(str).isin(top5)]
+
+    # Legacy payer override (backwards-compatible)
+    if payer and not insight_filter:
         df = df[df['Responsible Health Plan'].astype(str) == payer]
         extras.append(f'Payer: {payer}')
+
+    # Deduplication: exclude encounters claimed by higher-priority insight downloads
+    if insight_filter and active_filter not in ('full_pool', 'top5_payers'):
+        excl = _get_claimed_encounters(curr, active_filter)
+        if excl:
+            before = len(df)
+            df = df[~df['Encounter Number'].astype(str).isin(excl)]
+            removed = before - len(df)
+            if removed:
+                extras.append(f'Deduped: {removed:,} enc. covered by higher-priority insights excluded')
+
     priority = ['Encounter Number', 'Responsible Health Plan', 'Responsible Financial Class',
-                'Balance Amount', 'Discharge Aging Category', 'Days Outstanding',
+                'Balance Amount', 'Discharge Aging Category', 'Claim Status', 'Days Outstanding',
                 'Last Denial Code and Reason', 'Last Denial Date', 'Denial Age (Days)',
                 'TF Risk', 'Recommended Action', 'Discharge Date']
     df    = _select_download_cols(df, priority)
     ctx   = _download_context(name, week, extras)
-    fname = f'{name}_PriorityRecovery_{week}.xlsx'.replace(' ', '_')
-    return _make_excel_response(df, 'Priority Recovery Score — Encounter Detail', ctx, fname)
+    fk_slug = (insight_filter or 'PriorityRecovery').replace(':', '_').replace(' ', '_')
+    fname = f'{name}_{fk_slug}_{week}.xlsx'.replace(' ', '_')
+    title = _INSIGHT_FILTER_LABELS.get(
+        insight_filter.split(':')[0] if ':' in insight_filter else insight_filter,
+        'Priority Recovery Score — Encounter Detail'
+    )
+    return _make_excel_response(df, title, ctx, fname)
+
+
+_SNCA_CLIENT = 'Seneca_Health_SNCA_CA'
+
+
+def _check_snca_client(name):
+    """Return None if client is SNCA, otherwise a Flask error tuple."""
+    if name and 'SNCA' in name.upper():
+        return None
+    return jsonify({'error': f'Production data is only available for {_SNCA_CLIENT}',
+                    'snca_only': True}), 403
+
+
+@app.route('/api/workables/untouched-claims')
+def api_workables_untouched():
+    client = request.args.get('client')
+    name, state = _resolve_client(client)
+    if isinstance(state, tuple):
+        return state
+    err = _check_snca_client(name)
+    if err:
+        return err
+    if state['loading']:
+        return jsonify({'error': 'Data still loading'}), 503
+
+    prod_df = _get_production_df(name)
+    if prod_df is None:
+        return jsonify({'error': 'No production file found in Data/Production/'}), 404
+
+    weeks = state['weeks']
+    if not weeks:
+        return jsonify({'error': 'No ATB data'}), 404
+    week = request.args.get('week')
+    if not week or week not in state['weekly_data']:
+        week = weeks[-1]
+    atb_df = _apply_all_filters(state['weekly_data'][week], request)
+
+    date_str = request.args.get('date', '')
+    try:
+        end_date = pd.Timestamp(date_str) if date_str else pd.Timestamp.now().normalize()
+    except Exception:
+        end_date = pd.Timestamp.now().normalize()
+
+    wq_df = _get_work_queue_df(name)
+    exclude_wq = request.args.get('exclude_wq', 'false').lower() == 'true'
+
+    try:
+        result = untouched_claims_analysis(atb_df, prod_df, end_date, wq_df=wq_df, exclude_wq=exclude_wq)
+    except Exception as e:
+        print(f'[workables/untouched-claims ERROR] {e}')
+        import traceback; traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+    try:
+        _inject_pct(result['key_points'], result['summary']['total_bal'])
+        result_slim = {k: v for k, v in result.items() if k != 'rows'}
+        result_slim['rows']      = result['rows'][:500]
+        result_slim['row_count'] = len(result['rows'])
+        return jsonify(result_slim)
+    except Exception as e:
+        print(f'[workables/jsonify ERROR] {e}')
+        import traceback; traceback.print_exc()
+        return jsonify({'error': f'Serialization error: {e}'}), 500
+
+
+@app.route('/api/download/workables-untouched')
+def download_workables_untouched():
+    client = request.args.get('client')
+    name, state = _resolve_client(client)
+    if isinstance(state, tuple):
+        return state
+    err = _check_snca_client(name)
+    if err:
+        return err
+    if state['loading']:
+        return jsonify({'error': 'Data still loading'}), 503
+
+    prod_df = _get_production_df(name)
+    if prod_df is None:
+        return jsonify({'error': 'No production file found in Data/Production/'}), 404
+
+    weeks = state['weeks']
+    if not weeks:
+        return jsonify({'error': 'No ATB data'}), 404
+    week = request.args.get('week')
+    if not week or week not in state['weekly_data']:
+        week = weeks[-1]
+    atb_df = _apply_all_filters(state['weekly_data'][week], request)
+
+    date_str = request.args.get('date', '')
+    try:
+        end_date = pd.Timestamp(date_str) if date_str else pd.Timestamp.now().normalize()
+    except Exception:
+        end_date = pd.Timestamp.now().normalize()
+
+    wq_df = _get_work_queue_df(name)
+    exclude_wq = request.args.get('exclude_wq', 'false').lower() == 'true'
+
+    try:
+        result = untouched_claims_analysis(atb_df, prod_df, end_date, wq_df=wq_df, exclude_wq=exclude_wq)
+    except Exception as e:
+        print(f'[workables/download ERROR] {e}')
+        import traceback; traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+    rows = result['rows']
+    if not rows:
+        return jsonify({'error': 'No unworked claims to download'}), 404
+
+    df = pd.DataFrame(rows)
+    mode_label = 'Open' if exclude_wq else 'Unworked'
+    mode_title = 'Open ATB Claims (Excl. Work Queue)' if exclude_wq else 'Unworked ATB Claims'
+    ctx   = _download_context(name, week, [
+        f"{mode_title} — Production window: {result['summary']['prod_window']}",
+        f"ATB Week: {week}  |  {mode_label}: {result['summary']['unworked_count']:,} claims  |  Balance: ${result['summary']['unworked_bal']:,.0f}",
+    ])
+    fname = f"{name}_{mode_label}_ATB_{end_date.strftime('%m%d%Y')}.xlsx".replace(' ', '_')
+    return _make_excel_response(df, f'{mode_title} — Workables', ctx, fname)
 
 
 # Keep old /api/medicare/* paths as aliases so cached bookmarks still work

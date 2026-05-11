@@ -28,6 +28,29 @@ OVER_90_BUCKETS = ['91-120', '121-150', '151-180', '181-210', '211-240',
                    '241-270', '271-300', '301-330', '331-365', '366+']
 FEEDS_INTO_90  = ['61-90']
 
+# Claim Status values that define each scope (used for high-dollar insights)
+AR_SCOPE_STATUSES    = frozenset(['Denied Pending Review', 'Transmitted by Crossover'])
+CLAIMS_PROC_STATUSES = frozenset(['Correction Required', 'Held In Scrubber',
+                                  'Ready to Bill', 'Ready to bill'])
+
+# Priority order for encounter deduplication across insight downloads.
+# Encounters claimed by a higher-rank insight are excluded from lower-rank downloads.
+INSIGHT_PRIORITY_ORDER = [
+    'timely_filing',
+    '90_denied',
+    'aged_denials',
+    'quick_win',
+    'ar_scope_highval',
+    'claims_proc_highval',
+    'dnfb_client_highval',
+    '61_90_rollover',
+    'dnfb',
+    'slow_payer',
+    'critical_fc',
+    'top5_payers',
+    'full_pool',
+]
+
 
 def _decat(df):
     """Convert any categorical columns to plain strings in-place (returns copy)."""
@@ -174,6 +197,7 @@ def trending_summary(rows: list) -> list:
         word = 'increased' if direction == 'up' else 'decreased'
         points.append({
             'type': 'danger' if direction == 'up' else 'success',
+            'balance': float(abs(cumulative)),
             'text': f'Balance has {word} for {streak} consecutive weeks '
                     f'(cumulative {("+" if cumulative > 0 else "")}{_fmt_dollar(abs(cumulative))}{pct_str}).'
         })
@@ -183,6 +207,7 @@ def trending_summary(rows: list) -> list:
         pct_str = f' ({("+" if delta > 0 else "")}{pct}%)' if pct is not None else ''
         points.append({
             'type': 'danger' if delta > 0 else ('success' if delta < 0 else 'info'),
+            'balance': float(abs(delta)),
             'text': f'Balance {"increased" if delta > 0 else ("decreased" if delta < 0 else "unchanged")} '
                     f'this week by {_fmt_dollar(abs(delta))}{pct_str} vs prior week.'
         })
@@ -216,12 +241,14 @@ def trending_summary(rows: list) -> list:
             if abs(this_delta) > abs(prev_delta):
                 points.append({
                     'type': 'danger' if this_delta > 0 else 'success',
+                    'balance': float(abs(this_delta)),
                     'text': f'Balance movement is accelerating — this week\'s change '
                             f'({_fmt_dollar(this_delta)}) exceeded last week\'s ({_fmt_dollar(prev_delta)}).'
                 })
             else:
                 points.append({
                     'type': 'success' if this_delta > 0 else 'info',
+                    'balance': float(abs(this_delta)),
                     'text': f'Balance movement is decelerating — this week\'s change '
                             f'({_fmt_dollar(this_delta)}) was smaller than last week\'s ({_fmt_dollar(prev_delta)}).'
                 })
@@ -589,6 +616,7 @@ def rollover_summary(migration_data: dict) -> list:
     direction = 'deteriorating' if net > 0 else 'improving'
     points.append({
         'type': 'danger' if net > 0 else 'success',
+        'balance': float(aged_worse_bal),
         'text': f'Net aging direction is {direction}: {aged_worse_cnt:,} encounters aged into older buckets '
                 f'vs {improved_cnt:,} that moved to younger buckets (net {abs(net):,} {"worse" if net > 0 else "better"}).'
     })
@@ -604,6 +632,7 @@ def rollover_summary(migration_data: dict) -> list:
     if max_flow['from']:
         points.append({
             'type': 'danger',
+            'balance': float(max_flow['val']),
             'text': f'Largest aging movement: {_fmt_dollar(max_flow["val"])} ({max_flow["cnt"]:,} enc) '
                     f'flowed from {max_flow["from"]} → {max_flow["to"]}.'
         })
@@ -613,6 +642,7 @@ def rollover_summary(migration_data: dict) -> list:
     if worsened_pct is not None:
         points.append({
             'type': 'danger' if worsened_pct > 20 else 'warning',
+            'balance': float(aged_worse_bal),
             'text': f'{worsened_pct}% of continued balance ({_fmt_dollar(aged_worse_bal)}) '
                     f'aged into older buckets this week.'
         })
@@ -621,6 +651,7 @@ def rollover_summary(migration_data: dict) -> list:
     net_inflow = new_bal - resolved_bal
     points.append({
         'type': 'danger' if net_inflow > 0 else 'success',
+        'balance': float(new_bal),
         'text': f'New encounters ({_fmt_dollar(new_bal)}) {"exceeded" if net_inflow > 0 else "fell short of"} '
                 f'resolved encounters ({_fmt_dollar(resolved_bal)}) — '
                 f'net ATB {"inflow" if net_inflow > 0 else "reduction"} of {_fmt_dollar(abs(net_inflow))}.'
@@ -633,6 +664,7 @@ def rollover_summary(migration_data: dict) -> list:
     if direct_90_cnt > 0:
         points.append({
             'type': 'danger',
+            'balance': float(direct_90_bal),
             'text': f'{direct_90_cnt:,} new encounters ({_fmt_dollar(direct_90_bal)}) entered the ATB '
                     f'directly into 90+ day buckets this week.'
         })
@@ -817,6 +849,7 @@ def bifurcation_summary(bifur_data: dict, unbilled_data: dict) -> list:
     if cf_pct is not None:
         points.append({
             'type': 'info',
+            'balance': float(cf_bal),
             'text': f'{cf_pct}% of current ATB balance ({_fmt_dollar(cf_bal)}) is carried forward '
                     f'from prior week — {_fmt_dollar(new_bal)} is newly introduced this week.'
         })
@@ -837,6 +870,7 @@ def bifurcation_summary(bifur_data: dict, unbilled_data: dict) -> list:
     if over_90_pct is not None:
         points.append({
             'type': 'danger' if over_90_pct > 40 else 'warning',
+            'balance': float(over_90_bal),
             'text': f'90+ day buckets represent {over_90_pct}% of total ATB balance ({_fmt_dollar(over_90_bal)}).'
         })
 
@@ -850,6 +884,7 @@ def bifurcation_summary(bifur_data: dict, unbilled_data: dict) -> list:
         if dnfb_pct is not None:
             points.append({
                 'type': 'warning' if dnfb_pct > 20 else ('success' if dnfb_delta < 0 else 'info'),
+                'balance': float(dnfb_bal),
                 'text': f'DNFB accounts for {dnfb_pct}% of total ATB ({_fmt_dollar(dnfb_bal)}) '
                         f'— {direction} by {_fmt_dollar(abs(dnfb_delta))} vs prior week.'
             })
@@ -874,6 +909,7 @@ def bifurcation_summary(bifur_data: dict, unbilled_data: dict) -> list:
         lg_pct = _safe_pct(largest['current_balance'], curr_total_bal)
         points.append({
             'type': 'info',
+            'balance': float(largest['current_balance']),
             'text': f'Largest balance bucket: {largest["bucket"]} at {_fmt_dollar(largest["current_balance"])} '
                     f'({lg_pct}% of total ATB).'
         })
@@ -1316,6 +1352,7 @@ def denial_summary(data: dict) -> list:
     pct_str   = f' ({("+" if delta_bal > 0 else "")}{delta_pct}%)' if delta_pct is not None else ''
     points.append({
         'type': 'danger' if delta_bal > 0 else 'success',
+        'balance': float(denied_bal),
         'text': f'Open denial balance {"increased" if delta_bal > 0 else ("decreased" if delta_bal < 0 else "unchanged")} '
                 f'by {_fmt_dollar(abs(delta_bal))}{pct_str} this week '
                 f'(total {_fmt_dollar(denied_bal)}, {denied_cnt:,} encounters).'
@@ -1326,6 +1363,7 @@ def denial_summary(data: dict) -> list:
         avg_bal = kpis.get('avg_balance', 0.0)
         points.append({
             'type': 'danger' if pct_atb > 20 else 'warning',
+            'balance': float(denied_bal),
             'text': f'Open denials represent {pct_atb}% of total ATB balance. '
                     f'Average denied balance per encounter: {_fmt_dollar(avg_bal)}.'
         })
@@ -1339,6 +1377,7 @@ def denial_summary(data: dict) -> list:
         res_rate = _safe_pct(resolved_bal, prior_denied_bal)
         points.append({
             'type': 'success' if (res_rate or 0) >= 10 else 'warning',
+            'balance': float(resolved_bal),
             'text': f'Resolution rate: {res_rate}% of prior-week denial balance resolved '
                     f'({_fmt_dollar(resolved_bal)}, {resolved_cnt:,} encounters cleared).'
         })
@@ -1347,6 +1386,7 @@ def denial_summary(data: dict) -> list:
     net_inflow = new_bal - resolved_bal
     points.append({
         'type': 'danger' if net_inflow > 0 else 'success',
+        'balance': float(new_bal),
         'text': f'New denial inflow {_fmt_dollar(new_bal)} ({new_cnt:,} enc) '
                 f'{"exceeded" if net_inflow > 0 else "was offset by"} '
                 f'resolutions {_fmt_dollar(resolved_bal)} ({resolved_cnt:,} enc) — '
@@ -1375,6 +1415,7 @@ def denial_summary(data: dict) -> list:
         d_str = f', {"+" if worst_delta > 0 else ""}{_fmt_dollar(worst_delta)} WoW' if worst_delta != 0 else ''
         points.append({
             'type': 'danger',
+            'balance': float(worst['balance']),
             'text': f'Highest denial balance health plan: {worst["name"]} — '
                     f'{_fmt_dollar(worst["balance"])} ({worst.get("pct_of_denied")}% of all denials{d_str}).'
         })
@@ -1386,6 +1427,7 @@ def denial_summary(data: dict) -> list:
         top3_hp_names = ', '.join(r['name'] for r in by_hp[:3])
         points.append({
             'type': 'warning',
+            'balance': float(top3_hp_bal),
             'text': f'Top 3 health plans concentrate {top3_hp_pct}% of total denial balance '
                     f'({_fmt_dollar(top3_hp_bal)}): {top3_hp_names}.'
         })
@@ -1397,6 +1439,7 @@ def denial_summary(data: dict) -> list:
         grp_pct = lg.get('pct_of_denied')
         points.append({
             'type': 'info',
+            'balance': float(lg['balance']),
             'text': f'Largest denial group: "{lg["name"]}" — '
                     f'{_fmt_dollar(lg["balance"])} ({grp_pct}% of denials, {lg["count"]:,} enc).'
         })
@@ -1417,6 +1460,7 @@ def denial_summary(data: dict) -> list:
         oldest   = max(by_age, key=lambda r: r.get('avg_age_days') or 0)
         points.append({
             'type': 'danger',
+            'balance': float(aged_bal),
             'text': f'{aged_pct}% of denial balance ({_fmt_dollar(aged_bal)}, {aged_cnt:,} enc) '
                     f'is 90+ days old — oldest avg age in "{oldest["bucket"]}" bucket '
                     f'({oldest.get("avg_age_days", 0):.0f} avg days).'
@@ -1508,6 +1552,7 @@ def aging_contributors(latest_df: pd.DataFrame, prior_df: pd.DataFrame, top_n: i
     # 1. 90+ balance WoW
     key_points.append({
         'type': 'danger' if delta > 0 else 'success',
+        'balance': float(c_bal),
         'text': f'90+ balance {"increased" if delta > 0 else "decreased"} by '
                 f'${abs(delta):,.0f} ({("+" if delta > 0 else "")}{delta_pct}%) this week.'
     })
@@ -1515,6 +1560,7 @@ def aging_contributors(latest_df: pd.DataFrame, prior_df: pd.DataFrame, top_n: i
     # 2. Rolled-in volume
     key_points.append({
         'type': 'warning',
+        'balance': float(rolled_bal),
         'text': f'{rolled_cnt:,} encounters (${rolled_bal:,.0f}) rolled from 61-90 days into 90+ territory.'
     })
 
@@ -1523,6 +1569,7 @@ def aging_contributors(latest_df: pd.DataFrame, prior_df: pd.DataFrame, top_n: i
         top_rfc = by_rfc[0]
         key_points.append({
             'type': 'info',
+            'balance': float(top_rfc['curr_balance']),
             'text': f'Largest 90+ contributor by Fin. Class: '
                     f'{top_rfc["name"]} — ${top_rfc["curr_balance"]:,.0f} '
                     f'({round(top_rfc["curr_balance"] / c_bal * 100, 1) if c_bal else 0}% of total 90+).'
@@ -1547,6 +1594,7 @@ def aging_contributors(latest_df: pd.DataFrame, prior_df: pd.DataFrame, top_n: i
         names = ', '.join(r['name'] for r in all_rhp[:3])
         key_points.append({
             'type': 'warning',
+            'balance': float(top3_bal),
             'text': f'Top 3 health plans account for {top3_pct}% of 90+ balance '
                     f'({_fmt_dollar(top3_bal)}): {names}.'
         })
@@ -1568,6 +1616,7 @@ def aging_contributors(latest_df: pd.DataFrame, prior_df: pd.DataFrame, top_n: i
     if at_risk_cnt > 0:
         key_points.append({
             'type': 'warning',
+            'balance': float(at_risk_bal),
             'text': f'{at_risk_cnt:,} encounters ({_fmt_dollar(at_risk_bal)}) currently in 61-90 days '
                     f'are at risk of entering 90+ next week.'
         })
@@ -1808,6 +1857,7 @@ def denial_velocity_summary(data: dict) -> list:
     # 1. Open denial snapshot
     points.append({
         'type': 'info',
+        'balance': float(open_bal),
         'text': f'Latest ATB has {open_cnt:,} open denied encounters totalling {_fmt_dollar(open_bal)}. '
                 f'Analysis is based on current snapshot only — resolved denials are excluded.',
     })
@@ -1825,6 +1875,7 @@ def denial_velocity_summary(data: dict) -> list:
     if pct_90 is not None:
         points.append({
             'type': 'danger' if pct_90 > 30 else 'warning',
+            'balance': float(over_90_bal),
             'text': f'{pct_90}% of denied balance ({_fmt_dollar(over_90_bal)}) has been in denial status '
                     f'for 90+ days — these require immediate escalation.',
         })
@@ -1833,6 +1884,7 @@ def denial_velocity_summary(data: dict) -> list:
     if pct_180 is not None and pct_180 > 0:
         points.append({
             'type': 'danger',
+            'balance': float(over_180_bal),
             'text': f'{pct_180}% of denied balance ({_fmt_dollar(over_180_bal)}) is 180+ days old — '
                     f'critical write-off risk; timely filing deadlines likely breached.',
         })
@@ -1854,6 +1906,7 @@ def denial_velocity_summary(data: dict) -> list:
         oldest = max(aged_codes, key=lambda r: r['avg_age_days'])
         points.append({
             'type': 'danger',
+            'balance': float(oldest['balance']),
             'text': f'Oldest average denial age: "{oldest["code"][:60]}" — '
                     f'{oldest["avg_age_days"]:.0f} days avg ({oldest["count"]:,} enc, '
                     f'{_fmt_dollar(oldest["balance"])} balance).',
@@ -1865,6 +1918,7 @@ def denial_velocity_summary(data: dict) -> list:
         worst = max(stuck, key=lambda r: r['balance'])
         points.append({
             'type': 'danger',
+            'balance': float(worst['balance']),
             'text': f'"{worst["code"][:60]}" — {worst["pct_over_90"]}% of its {_fmt_dollar(worst["balance"])} '
                     f'denial balance is 90+ days old ({worst["count"]:,} encounters).',
         })
@@ -2208,60 +2262,111 @@ def cash_collection_action_plan(weekly_data: dict, curr_df: pd.DataFrame, prior_
 
     # ── SECTION 8: KEY ACTION INSIGHTS ──────────────────────
     insights = []
+    # pct helper: insight_balance / total_AR_excl_selfpay (consistent denominator across all insights)
+    _ipct = lambda bal: round(float(bal) / total_ar * 100, 1) if total_ar > 0 else 0.0
+
     total_90_denied = denied_recoverable + denied_hard
     if total_90_denied > 0:
         top_payers_90d = (_get_denied_df(over90_df).groupby(_RHP)[_BAL].sum().sort_values(ascending=False))
         top3_pct = round(float(top_payers_90d.head(3).sum()) / total_90_denied * 100, 0)
-        insights.append({'type': 'danger',
+        insights.append({'type': 'danger', 'filter_key': '90_denied', 'pct': _ipct(total_90_denied),
             'text': f'{_fmt_dollar(total_90_denied)} locked in 90+ DENIED claims — '
                     f'top 3 payers account for {top3_pct:.0f}% of this. Escalate immediately.'})
     if at_risk_pool > 0:
         cnt_61_90 = int(deduped[deduped[_DAC] == '61-90'][_ENC].nunique())
-        insights.append({'type': 'warning',
+        insights.append({'type': 'warning', 'filter_key': '61_90_rollover', 'pct': _ipct(at_risk_pool),
             'text': f'{cnt_61_90:,} encounters in 61-90 bucket ({_fmt_dollar(at_risk_pool)}) '
                     f'roll into 90+ next week — intervening now prevents permanent aging.'})
     if quick_win_bal > 0:
-        insights.append({'type': 'success',
+        insights.append({'type': 'success', 'filter_key': 'quick_win', 'pct': _ipct(quick_win_bal),
             'text': f'Quick win: {quick_win_cnt:,} newly denied 91-120d claims worth {_fmt_dollar(quick_win_bal)} '
                     f'— denial is fresh (<30 days), high reversal probability.'})
     if payer_matrix:
         slowest = max(payer_matrix, key=lambda r: r['x'])
         if slowest['x'] >= 45:
-            insights.append({'type': 'warning',
+            insights.append({'type': 'warning', 'filter_key': f'slow_payer:{slowest["name"]}',
+                'pct': _ipct(slowest['y']),
                 'text': f'Payer "{slowest["name"][:50]}" averages {slowest["x"]:.0f} days from denial to resolution '
                         f'({_fmt_dollar(slowest["y"])} outstanding) — reassign to a denial specialist.'})
     if payer_matrix:
         top5_bal = sum(r['y'] for r in payer_matrix[:5])
         top5_pct = round(top5_bal / total_ar * 100, 0) if total_ar else 0
-        insights.append({'type': 'info',
+        _top5_names = [r['name'] for r in payer_matrix[:5]]
+        insights.append({'type': 'info', 'filter_key': 'top5_payers',
+            'filter_meta': _top5_names, 'pct': _ipct(top5_bal),
             'text': f'Working top 5 payers by priority covers {top5_pct:.0f}% of total AR '
                     f'({_fmt_dollar(top5_bal)}) — concentrate team effort here first.'})
     if urgency_alert['show']:
-        insights.append({'type': 'danger',
+        insights.append({'type': 'danger', 'filter_key': 'timely_filing',
+            'pct': _ipct(urgency_alert['at_risk_balance']),
             'text': f'URGENT: {_fmt_dollar(urgency_alert["at_risk_balance"])} in '
                     f'{urgency_alert["at_risk_count"]:,} encounters faces timely filing deadline '
                     f'within {urgency_alert["threshold_days"]} days — must file THIS WEEK.'})
     gap = forecast['accelerated_8wk_recovery'] - forecast['baseline_8wk_recovery']
     if gap > 0:
-        insights.append({'type': 'success',
+        insights.append({'type': 'success', 'filter_key': 'full_pool', 'pct': _ipct(gap),
             'text': f'Doubling resolution pace could yield an extra {_fmt_dollar(gap)} over 8 weeks '
                     f'(total {_fmt_dollar(forecast["accelerated_8wk_recovery"])} vs '
                     f'current-pace {_fmt_dollar(forecast["baseline_8wk_recovery"])}).'})
     if dnfb_pool > 0:
-        insights.append({'type': 'info',
+        insights.append({'type': 'info', 'filter_key': 'dnfb', 'pct': _ipct(dnfb_pool),
             'text': f'{_fmt_dollar(dnfb_pool)} is in DNFB — internal billing issue, not a payer problem. '
                     f'Same-day resolution frees this cash immediately.'})
     crit_fcs = [r for r in fc_rankings if r['action_priority'] == 'CRITICAL']
     if crit_fcs:
         c = crit_fcs[0]
-        insights.append({'type': 'danger',
+        insights.append({'type': 'danger', 'filter_key': f'critical_fc:{c["name"]}',
+            'pct': _ipct(c['total_balance']),
             'text': f'Financial class "{c["name"][:40]}" is CRITICAL: '
                     f'{c["pct_over_90"]}% over 90 days, {c["avg_denial_rate"]}% denial rate, '
                     f'{_fmt_dollar(c["total_balance"])} total balance.'})
     if denied_hard > 0:
-        insights.append({'type': 'danger',
+        insights.append({'type': 'danger', 'filter_key': 'aged_denials', 'pct': _ipct(denied_hard),
             'text': f'{_fmt_dollar(denied_hard)} in denials aged 90+ days — approaching write-off territory. '
                     f'Immediate escalation required before revenue is permanently lost.'})
+
+    # ── HIGH-DOLLAR SCOPE INSIGHTS (require Claim Status column) ──
+    _CS = 'Claim Status'
+    _HIGH_VAL = 2000
+    if _CS in deduped.columns:
+        hd = deduped[deduped[_BAL] >= _HIGH_VAL]
+        cs_vals = hd[_CS].astype(str)
+
+        # AR scope: already-transmitted claims stalled in payer review
+        ar_df = hd[cs_vals.isin(AR_SCOPE_STATUSES)]
+        if not ar_df.empty:
+            ar_cnt  = int(ar_df[_ENC].nunique())
+            ar_bal  = float(ar_df[_BAL].sum())
+            n_deny  = int(ar_df[ar_df[_CS].astype(str) == 'Denied Pending Review'][_ENC].nunique())
+            n_cross = int(ar_df[ar_df[_CS].astype(str) == 'Transmitted by Crossover'][_ENC].nunique())
+            insights.append({'type': 'danger', 'filter_key': 'ar_scope_highval', 'pct': _ipct(ar_bal),
+                'text': f'{ar_cnt:,} high-dollar (>$2K) AR claims worth {_fmt_dollar(ar_bal)} stalled in payer review — '
+                        f'{n_deny:,} Denied Pending Review, {n_cross:,} Transmitted by Crossover. '
+                        f'File reconsiderations & chase crossovers now — these are already transmitted.'})
+
+        # Claims processing scope: billing workflow holds
+        cp_df = hd[cs_vals.isin(CLAIMS_PROC_STATUSES)]
+        if not cp_df.empty:
+            cp_cnt = int(cp_df[_ENC].nunique())
+            cp_bal = float(cp_df[_BAL].sum())
+            insights.append({'type': 'warning', 'filter_key': 'claims_proc_highval', 'pct': _ipct(cp_bal),
+                'text': f'{cp_cnt:,} high-dollar (>$2K) claims worth {_fmt_dollar(cp_bal)} blocked in billing workflow '
+                        f'(Correction Required / Held In Scrubber / Ready to Bill). '
+                        f'Resolve all holds today — every day delayed is cash not collected.'})
+
+        # DNFB client scope: DNFB but NOT billing-workflow holds (client-side)
+        dnfb_sub = deduped[deduped[_DAC] == 'DNFB']
+        dc_df = dnfb_sub[
+            (~dnfb_sub[_CS].astype(str).isin(CLAIMS_PROC_STATUSES)) &
+            (dnfb_sub[_BAL] >= _HIGH_VAL)
+        ]
+        if not dc_df.empty:
+            dc_cnt = int(dc_df[_ENC].nunique())
+            dc_bal = float(dc_df[_BAL].sum())
+            insights.append({'type': 'warning', 'filter_key': 'dnfb_client_highval', 'pct': _ipct(dc_bal),
+                'text': f'{dc_cnt:,} DNFB high-dollar (>$2K) claims worth {_fmt_dollar(dc_bal)} are client-side holds '
+                        f'(not billing workflow issues). Escalate to HIM / clinical teams for '
+                        f'same-day release — no payer action needed.'})
 
     return {
         'urgency_alert': urgency_alert,
@@ -2275,8 +2380,24 @@ def cash_collection_action_plan(weekly_data: dict, curr_df: pd.DataFrame, prior_
     }
 
 
-def get_priority_encounter_df(df_curr: pd.DataFrame) -> pd.DataFrame:
-    """Return encounter-level DataFrame for Cash Action Plan download (90+ or denied pool)."""
+def get_priority_encounter_df(df_curr: pd.DataFrame, insight_filter: str = None) -> pd.DataFrame:
+    """Return encounter-level DataFrame for Cash Action Plan download.
+
+    insight_filter controls which subset is returned:
+      None / 'full_pool' — all 90+ or denied claims (default)
+      '90_denied'        — denied claims in 90+ buckets
+      '61_90_rollover'   — encounters in 61-90 bucket
+      'quick_win'        — 91-120d denied with denial age <30 days
+      'slow_payer:<name>'— all priority claims for named payer
+      'top5_payers'      — not used directly; payers passed via app.py
+      'timely_filing'    — encounters with TF Risk CRITICAL or High
+      'dnfb'               — encounters in DNFB bucket
+      'critical_fc:<nm>'   — all priority claims for named financial class
+      'aged_denials'       — denied claims with denial age >=90 days
+      'ar_scope_highval'   — Claim Status IN AR_SCOPE_STATUSES AND Balance >=2000
+      'claims_proc_highval'— Claim Status IN CLAIMS_PROC_STATUSES AND Balance >=2000
+      'dnfb_client_highval'— DNFB + Claim Status NOT IN claims-proc + Balance >=2000
+    """
     curr = _decat(df_curr)
 
     _BAL   = 'Balance Amount'
@@ -2286,6 +2407,8 @@ def get_priority_encounter_df(df_curr: pd.DataFrame) -> pd.DataFrame:
     _RD    = 'REPORT_DATE'
     _LDD   = 'Last Denial Date'
     _CODE  = 'Last Denial Code and Reason'
+    _RFC   = 'Responsible Financial Class'
+    _RHP   = 'Responsible Health Plan'
     TF_COL = 'Days to Timely Filing Limit'
 
     deduped = curr.sort_values(_BAL, ascending=False).drop_duplicates(_ENC)
@@ -2301,10 +2424,23 @@ def get_priority_encounter_df(df_curr: pd.DataFrame) -> pd.DataFrame:
 
     denied_df   = _get_denied_df(deduped)
     denied_encs = set(denied_df[_ENC].astype(str))
-    pool = deduped[
-        deduped[_DAC].isin(OVER_90_BUCKETS) |
-        deduped[_ENC].astype(str).isin(denied_encs)
-    ].copy()
+
+    # ── Insight-specific pre-pool selection ──────────────────
+    fk = (insight_filter or '').strip()
+    _CS = 'Claim Status'
+
+    if fk == 'dnfb':
+        pool = deduped[deduped[_DAC] == 'DNFB'].copy()
+    elif fk == '61_90_rollover':
+        pool = deduped[deduped[_DAC] == '61-90'].copy()
+    elif fk in ('ar_scope_highval', 'claims_proc_highval', 'dnfb_client_highval'):
+        # High-dollar scope insights draw from the full deduped set, not just 90+/denied
+        pool = deduped.copy()
+    else:
+        pool = deduped[
+            deduped[_DAC].isin(OVER_90_BUCKETS) |
+            deduped[_ENC].astype(str).isin(denied_encs)
+        ].copy()
 
     if _DD in pool.columns:
         dd = pd.to_datetime(pool[_DD], errors='coerce')
@@ -2353,4 +2489,265 @@ def get_priority_encounter_df(df_curr: pd.DataFrame) -> pd.DataFrame:
         return 'Standard follow-up and status check'
 
     pool['Recommended Action'] = pool.apply(_action, axis=1)
-    return pool.sort_values(_BAL, ascending=False)
+    pool = pool.sort_values(_BAL, ascending=False)
+
+    # ── Post-pool insight-specific filtering ─────────────────
+    if fk == '90_denied':
+        pool = pool[
+            pool[_DAC].isin(OVER_90_BUCKETS) &
+            pool[_ENC].astype(str).isin(denied_encs)
+        ]
+    elif fk == 'quick_win':
+        qw_mask = (
+            (pool[_DAC] == '91-120') &
+            pool[_ENC].astype(str).isin(denied_encs)
+        )
+        if 'Denial Age (Days)' in pool.columns:
+            qw_mask = qw_mask & (pool['Denial Age (Days)'].fillna(9999) < 30)
+        pool = pool[qw_mask]
+    elif fk.startswith('slow_payer:'):
+        payer_name = fk[len('slow_payer:'):]
+        if _RHP in pool.columns:
+            pool = pool[pool[_RHP].astype(str) == payer_name]
+    elif fk.startswith('critical_fc:'):
+        fc_name = fk[len('critical_fc:'):]
+        if _RFC in pool.columns:
+            pool = pool[pool[_RFC].astype(str) == fc_name]
+    elif fk == 'timely_filing':
+        if 'TF Risk' in pool.columns:
+            pool = pool[pool['TF Risk'].isin(['CRITICAL (<14d)', 'High (<30d)'])]
+    elif fk == 'aged_denials':
+        if 'Denial Age (Days)' in pool.columns:
+            pool = pool[
+                pool[_ENC].astype(str).isin(denied_encs) &
+                (pool['Denial Age (Days)'].fillna(0) >= 90)
+            ]
+        else:
+            pool = pool[pool[_ENC].astype(str).isin(denied_encs)]
+
+    elif fk == 'ar_scope_highval':
+        if _CS in pool.columns:
+            pool = pool[
+                pool[_CS].astype(str).isin(AR_SCOPE_STATUSES) &
+                (pool[_BAL] >= 2000)
+            ]
+        else:
+            pool = pool.iloc[0:0]  # Claim Status column absent → empty result
+
+    elif fk == 'claims_proc_highval':
+        if _CS in pool.columns:
+            pool = pool[
+                pool[_CS].astype(str).isin(CLAIMS_PROC_STATUSES) &
+                (pool[_BAL] >= 2000)
+            ]
+        else:
+            pool = pool.iloc[0:0]
+
+    elif fk == 'dnfb_client_highval':
+        if _CS in pool.columns:
+            pool = pool[
+                (pool[_DAC] == 'DNFB') &
+                (~pool[_CS].astype(str).isin(CLAIMS_PROC_STATUSES)) &
+                (pool[_BAL] >= 2000)
+            ]
+        else:
+            pool = pool[pool[_DAC] == 'DNFB']
+
+    return pool
+
+
+def untouched_claims_analysis(atb_df, prod_df, end_date, wq_df=None, exclude_wq=False):
+    """
+    Returns ATB claims not worked in production (pending claims).
+
+    atb_df     : ATB DataFrame for the selected week (already filtered by ATB filters)
+    prod_df    : SNCA Production DataFrame (all rows)
+    end_date   : datetime — filter prod_df to last 30 days to build worked-claim set
+    wq_df      : Work Queue Weekly DataFrame (optional) — adds Work Flow State column
+    exclude_wq : if True, further exclude claims already in the Work Queue (Mode 2)
+    """
+    import math as _math
+
+    if not isinstance(end_date, pd.Timestamp):
+        end_date = pd.Timestamp(end_date)
+    start_date = end_date - pd.Timedelta(days=30)
+
+    # Build set of worked claim numbers from production (last 30 days)
+    mask_date = (prod_df['Worked Date'] >= start_date) & (prod_df['Worked Date'] <= end_date)
+    worked_prod = prod_df[mask_date]
+    worked_nums = set()
+    for col in ('Claim#', 'First Claim#'):
+        if col in worked_prod.columns:
+            vals = pd.to_numeric(worked_prod[col], errors='coerce').dropna()
+            worked_nums.update(vals.astype('int64').tolist())
+
+    prod_window_count = len(worked_prod)
+
+    # Mark each ATB row as worked or unworked
+    atb = atb_df.copy()
+    atb_cols = atb.columns.tolist()
+
+    def _is_worked(row):
+        for col in ('First Claim Number', 'Last Claim Number'):
+            if col in atb_cols:
+                v = row[col]
+                try:
+                    if pd.notna(v) and int(float(v)) in worked_nums:
+                        return True
+                except (ValueError, TypeError):
+                    pass
+        return False
+
+    atb['_worked'] = atb.apply(_is_worked, axis=1)
+    unworked_df = atb[~atb['_worked']].drop(columns=['_worked'])
+    worked_df   = atb[ atb['_worked']].drop(columns=['_worked'])
+
+    total_atb      = len(atb)
+    unworked_count = len(unworked_df)
+    worked_count   = len(worked_df)
+    total_bal      = float(atb['Balance Amount'].sum())
+    unworked_bal   = float(unworked_df['Balance Amount'].sum()) if unworked_count else 0.0
+    worked_bal     = float(worked_df['Balance Amount'].sum())   if worked_count   else 0.0
+    unworked_pct   = round(unworked_count / total_atb * 100, 1) if total_atb else 0.0
+    unworked_bal_pct = round(unworked_bal / total_bal * 100, 1) if total_bal else 0.0
+
+    # Build Work Queue encounter-number → state map (WQ rows match ATB via Encounter Number)
+    wq_map = {}
+    wq_excluded_count = 0
+    wq_excluded_bal   = 0.0
+    if (wq_df is not None
+            and 'Encounter Number' in wq_df.columns
+            and 'Work Flow State' in wq_df.columns):
+        for _, wqrow in wq_df.iterrows():
+            enc = wqrow['Encounter Number']
+            ws  = wqrow['Work Flow State']
+            if pd.notna(enc) and pd.notna(ws):
+                try:
+                    wq_map[int(enc)] = str(ws).strip()
+                except (ValueError, TypeError):
+                    pass
+
+    # Mode 2: remove Work Queue-assigned claims from the unworked set
+    if exclude_wq and wq_map:
+        def _in_wq(row):
+            v = row.get('Encounter Number')
+            try:
+                if pd.notna(v) and int(float(v)) in wq_map:
+                    return True
+            except (ValueError, TypeError):
+                pass
+            return False
+        _wq_mask         = unworked_df.apply(_in_wq, axis=1)
+        wq_excluded_df   = unworked_df[_wq_mask]
+        unworked_df      = unworked_df[~_wq_mask].copy()
+        wq_excluded_count = len(wq_excluded_df)
+        wq_excluded_bal   = float(wq_excluded_df['Balance Amount'].sum()) if wq_excluded_count else 0.0
+        unworked_count   = len(unworked_df)
+        unworked_bal     = float(unworked_df['Balance Amount'].sum()) if unworked_count else 0.0
+        unworked_pct     = round(unworked_count / total_atb * 100, 1)  if total_atb else 0.0
+        unworked_bal_pct = round(unworked_bal / total_bal * 100, 1)    if total_bal  else 0.0
+
+    key_points = []
+    if unworked_count:
+        key_points.append({
+            'type': 'danger',
+            'balance': unworked_bal,
+            'text': f'{unworked_count:,} ATB claims ({_fmt_dollar(unworked_bal)}) have not been worked '
+                    f'in the last 30 days — {unworked_bal_pct}% of total ATB balance.'
+        })
+    if worked_count:
+        key_points.append({
+            'type': 'success',
+            'balance': worked_bal,
+            'text': f'{worked_count:,} ATB claims ({_fmt_dollar(worked_bal)}) have been worked '
+                    f'within the last 30 days ({prod_window_count:,} production records reviewed).'
+        })
+    # Top unworked aging bucket
+    if unworked_count and 'Discharge Aging Category' in unworked_df.columns:
+        top_bucket = (unworked_df.groupby('Discharge Aging Category')['Balance Amount']
+                      .sum().sort_values(ascending=False))
+        if not top_bucket.empty:
+            bkt_bal = float(top_bucket.iloc[0])
+            key_points.append({
+                'type': 'warning',
+                'balance': bkt_bal,
+                'text': f'Largest unworked bucket: "{top_bucket.index[0]}" — {_fmt_dollar(bkt_bal)} unworked balance.'
+            })
+    # Top unworked health plan
+    if unworked_count and 'Responsible Health Plan' in unworked_df.columns:
+        top_plan = (unworked_df.groupby('Responsible Health Plan')['Balance Amount']
+                    .sum().sort_values(ascending=False))
+        if not top_plan.empty:
+            plan_bal = float(top_plan.iloc[0])
+            key_points.append({
+                'type': 'info',
+                'balance': plan_bal,
+                'text': f'Top unworked health plan: "{str(top_plan.index[0])[:50]}" — {_fmt_dollar(plan_bal)}.'
+            })
+    if exclude_wq and wq_excluded_count:
+        key_points.append({
+            'type': 'info',
+            'balance': wq_excluded_bal,
+            'text': f'{wq_excluded_count:,} unworked claims ({_fmt_dollar(wq_excluded_bal)}) '
+                    f'are already in the Work Queue and excluded from this view.'
+        })
+
+    # Serialize rows with NaN/NaT/NA-safe conversion
+    def _safe(v):
+        try:
+            if pd.isnull(v):   # handles NaN, NaT, NA, None
+                return None
+        except (TypeError, ValueError):
+            pass
+        if isinstance(v, pd.Timestamp):
+            return v.strftime('%m/%d/%Y')
+        if hasattr(v, 'item'):          # numpy scalar → Python native
+            return v.item()
+        return v
+
+    rows = unworked_df.copy()
+    # Drop internal ATB columns not useful for display
+    for drop_col in ('REPORT_DATE',):
+        if drop_col in rows.columns:
+            rows = rows.drop(columns=[drop_col])
+    # Format date columns as strings
+    for date_col in ('Discharge Date',):
+        if date_col in rows.columns:
+            rows[date_col] = pd.to_datetime(rows[date_col], errors='coerce').dt.strftime('%m/%d/%Y').fillna('')
+
+    # Add Work Flow State column — Mode 1 only (Mode 2 already excluded WQ-matched claims)
+    if (not exclude_wq) and wq_map:
+        def _wq_lookup(row):
+            v = row.get('Encounter Number')
+            try:
+                if pd.notna(v) and int(float(v)) in wq_map:
+                    return wq_map[int(float(v))]
+            except (ValueError, TypeError):
+                pass
+            return ''
+
+        rows['Work Flow State'] = rows.apply(_wq_lookup, axis=1)
+
+    rows_records = [
+        {col: _safe(val) for col, val in rec.items()}
+        for rec in rows.astype(object).to_dict(orient='records')
+    ]
+
+    return {
+        'rows': rows_records,
+        'summary': {
+            'total_atb':       total_atb,
+            'unworked_count':  unworked_count,
+            'unworked_bal':    round(unworked_bal, 2),
+            'worked_count':    worked_count,
+            'worked_bal':      round(worked_bal, 2),
+            'unworked_pct':    unworked_pct,
+            'unworked_bal_pct': unworked_bal_pct,
+            'total_bal':       round(total_bal, 2),
+            'prod_window':     f'{start_date.strftime("%m/%d/%Y")} – {end_date.strftime("%m/%d/%Y")}',
+            'worked_nums_count':  len(worked_nums),
+            'wq_excluded_count':  wq_excluded_count,
+            'wq_excluded_bal':    round(wq_excluded_bal, 2),
+        },
+        'key_points': key_points,
+    }

@@ -6,7 +6,7 @@
 <title>ATB KPI Dashboard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/css/dashboard.css?v=3">
+<link rel="stylesheet" href="/static/css/dashboard.css?v=8">
 
 <!--[if gte mso 9]><xml>
 <mso:CustomDocumentProperties>
@@ -72,7 +72,7 @@
       <span class="nav-badge">LIVE</span>
     </a>
 
-    <a class="nav-item soon" title="Coming soon" href="#">
+    <a class="nav-item" data-section="workables" onclick="switchSection('workables');return false;" href="#">
       <span class="nav-icon">📋</span>
       <span>Workables</span>
     </a>
@@ -112,17 +112,8 @@
 
     <div id="content">
 
-      <!-- ══ SECTION: MEDICARE ATB ══════════════════════════════ -->
-      <div class="section-pane" id="section-medicare" style="display:block">
-
-        <!-- ── HIGH DOLLAR BANNER ────────────────────────── -->
-        <div class="hd-banner" id="hd-threshold-banner" style="display:none">
-          <span class="hd-banner-icon">💰</span>
-          <span id="hd-banner-text">High Dollar view — loading threshold...</span>
-        </div>
-
-        <!-- ── FILTER BAR ─────────────────────────────────── -->
-        <div class="filter-bar" id="filter-bar">
+      <!-- ── SHARED FILTER BAR (ATB Analysis + Workables) ──── -->
+      <div class="filter-bar" id="filter-bar" style="display:none">
           <span class="filter-bar-label">Filters</span>
 
           <div class="filter-group">
@@ -188,10 +179,82 @@
             </div>
           </div>
 
+          <div class="filter-group">
+            <span class="filter-group-label">Claim Status:</span>
+            <div class="fd-wrap" id="fd-cs">
+              <button class="fd-trigger" onclick="fdToggle('fd-cs')">
+                <span class="fd-trigger-text" id="fd-cs-text">All</span>
+                <span class="fd-trigger-count" id="fd-cs-count" style="display:none"></span>
+                <span class="fd-trigger-arrow">&#9660;</span>
+              </button>
+              <div class="fd-panel" id="fd-cs-panel">
+                <div class="fd-search-wrap">
+                  <input class="fd-search" type="text" placeholder="Search..." oninput="fdSearch('fd-cs',this.value)">
+                </div>
+                <div class="fd-actions">
+                  <button class="fd-action-btn" onclick="fdSelectAll('fd-cs')">Select All</button>
+                  <button class="fd-action-btn" onclick="fdClear('fd-cs')">Clear</button>
+                </div>
+                <div class="fd-options" id="fd-cs-options"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="filter-group">
+            <span class="filter-group-label">Discharge Aging:</span>
+            <div class="fd-wrap" id="fd-dac">
+              <button class="fd-trigger" onclick="fdToggle('fd-dac')">
+                <span class="fd-trigger-text" id="fd-dac-text">All</span>
+                <span class="fd-trigger-count" id="fd-dac-count" style="display:none"></span>
+                <span class="fd-trigger-arrow">&#9660;</span>
+              </button>
+              <div class="fd-panel" id="fd-dac-panel">
+                <div class="fd-search-wrap">
+                  <input class="fd-search" type="text" placeholder="Search..." oninput="fdSearch('fd-dac',this.value)">
+                </div>
+                <div class="fd-actions">
+                  <button class="fd-action-btn" onclick="fdSelectAll('fd-dac')">Select All</button>
+                  <button class="fd-action-btn" onclick="fdClear('fd-dac')">Clear</button>
+                </div>
+                <div class="fd-options" id="fd-dac-options"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="filter-group">
+            <span class="filter-group-label">Claim Trans. Age:</span>
+            <div class="fd-wrap" id="fd-ctac">
+              <button class="fd-trigger" onclick="fdToggle('fd-ctac')">
+                <span class="fd-trigger-text" id="fd-ctac-text">All</span>
+                <span class="fd-trigger-count" id="fd-ctac-count" style="display:none"></span>
+                <span class="fd-trigger-arrow">&#9660;</span>
+              </button>
+              <div class="fd-panel" id="fd-ctac-panel">
+                <div class="fd-search-wrap">
+                  <input class="fd-search" type="text" placeholder="Search..." oninput="fdSearch('fd-ctac',this.value)">
+                </div>
+                <div class="fd-actions">
+                  <button class="fd-action-btn" onclick="fdSelectAll('fd-ctac')">Select All</button>
+                  <button class="fd-action-btn" onclick="fdClear('fd-ctac')">Clear</button>
+                </div>
+                <div class="fd-options" id="fd-ctac-options"></div>
+              </div>
+            </div>
+          </div>
+
           <div class="filter-active-bar" id="filter-active-bar">
             <span id="filter-active-tags"></span>
             <button class="filter-clear-btn" onclick="clearAllFilters()" title="Clear all filters">&#10005;</button>
           </div>
+        </div>
+
+      <!-- ══ SECTION: MEDICARE ATB ══════════════════════════════ -->
+      <div class="section-pane" id="section-medicare" style="display:block">
+
+        <!-- ── HIGH DOLLAR BANNER ────────────────────────── -->
+        <div class="hd-banner" id="hd-threshold-banner" style="display:none">
+          <span class="hd-banner-icon">💰</span>
+          <span id="hd-banner-text">High Dollar view — loading threshold...</span>
         </div>
 
         <!-- Tab Nav -->
@@ -1091,7 +1154,10 @@
 
           <!-- Key Insights Panel -->
           <div class="key-points-panel" id="cap-insights-panel" style="display:none;margin-bottom:20px">
-            <div class="kp-title">&#9888; Cash Collection Action Insights</div>
+            <div class="kp-title" style="display:flex;align-items:center;gap:10px">
+              <span>&#9888; Cash Collection Action Insights</span>
+              <button class="insight-dl-btn" style="margin-left:auto;padding:3px 10px;font-size:12px" onclick="downloadCashActionPlanAll()" title="Download all insights combined into one file">&#8659; Download All</button>
+            </div>
             <div id="cap-insights-list"></div>
           </div>
 
@@ -1207,14 +1273,65 @@
 
       </div><!-- /section-medicare -->
 
-      <!-- ══ SECTION: WORKABLES (placeholder) ════════════════ -->
+      <!-- ══ SECTION: WORKABLES ════════════════════════════════ -->
       <div class="section-pane" id="section-workables" style="display:none">
-        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:80px;color:#64748b">
-          <div style="font-size:40px;margin-bottom:16px">📋</div>
-          <div style="font-size:18px;font-weight:600;color:#94a3b8">Workables Dashboard</div>
-          <div style="font-size:13px;margin-top:8px">Coming Soon — Workables vs Production analysis</div>
+
+        <!-- Tab Nav -->
+        <div class="tab-nav">
+          <button class="tab-btn active" data-tab="untouched" onclick="switchWorkablesTab('untouched')">
+            Untouched Claims
+          </button>
         </div>
-      </div>
+
+        <!-- Tab: Untouched Claims -->
+        <div id="workables-tab-untouched">
+
+          <!-- Controls bar: date + week + view toggle (ATB filters from shared filter bar above) -->
+          <div style="display:flex;align-items:center;gap:16px;margin-bottom:16px;flex-wrap:wrap">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span class="filter-bar-label" style="white-space:nowrap">Production window (as of):</span>
+              <input type="date" id="wb-date-picker" class="wb-date-input" oninput="loadUntouchedClaims()" />
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <span class="filter-bar-label" style="white-space:nowrap">ATB Week:</span>
+              <select id="wb-week-select" class="wb-week-select" onchange="loadUntouchedClaims()"></select>
+            </div>
+            <div class="wb-mode-toggle">
+              <button id="wb-toggle-all"  class="wb-toggle-btn active" onclick="switchWbMode(false)">All Untouched</button>
+              <button id="wb-toggle-open" class="wb-toggle-btn"        onclick="switchWbMode(true)">Excl. Work Queue</button>
+            </div>
+          </div>
+
+          <!-- KPI strip -->
+          <div class="kpi-grid" id="wb-kpi-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:20px"></div>
+
+          <!-- Key Insights Panel -->
+          <div class="key-points-panel" id="wb-insights-panel" style="display:none;margin-bottom:20px">
+            <div class="kp-title">&#9888; Unworked Claims Insights</div>
+            <div id="wb-insights-list"></div>
+          </div>
+
+          <!-- Data Table Panel -->
+          <div class="section-card" id="wb-table-panel" style="display:none">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+              <span class="section-title">Unworked ATB Claims</span>
+              <span id="wb-row-count" style="font-size:12px;color:#64748b"></span>
+              <button class="insight-dl-btn" style="margin-left:auto;padding:3px 10px;font-size:12px"
+                      onclick="downloadUntouchedClaims()" title="Download full untouched claims list">
+                &#8659; Download All
+              </button>
+            </div>
+            <div style="overflow-x:auto">
+              <table class="atb-table" id="wb-data-table">
+                <thead id="wb-table-head"></thead>
+                <tbody id="wb-table-body"></tbody>
+              </table>
+            </div>
+            <div id="wb-table-note" style="font-size:11px;color:#64748b;margin-top:6px"></div>
+          </div>
+
+        </div><!-- /workables-tab-untouched -->
+      </div><!-- /section-workables -->
 
       <!-- ══ SECTION: PRODUCTION (placeholder) ═══════════════ -->
       <div class="section-pane" id="section-production" style="display:none">
@@ -1273,6 +1390,6 @@
 {% endif %}
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
-<script src="/static/js/dashboard.js?v=7"></script>
+<script src="/static/js/dashboard.js?v=17"></script>
 </body>
 </html>

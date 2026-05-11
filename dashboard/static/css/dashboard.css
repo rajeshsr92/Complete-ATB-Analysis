@@ -1000,6 +1000,34 @@ body { font-family: 'Inter', 'Segoe UI', sans-serif; background: var(--bg-dark);
 .kp-dot.info { background: var(--accent); }
 .kp-dot.success { background: var(--success); }
 .kp-item strong { color: var(--text-primary); }
+.kp-text { flex: 1; }
+.insight-pct {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 10px;
+  padding: 1px 7px;
+  white-space: nowrap;
+  align-self: center;
+}
+.insight-dl-btn {
+  flex-shrink: 0;
+  padding: 2px 6px;
+  font-size: 11px;
+  line-height: 1;
+  background: rgba(14,165,233,0.12);
+  border: 1px solid rgba(14,165,233,0.35);
+  border-radius: 4px;
+  color: var(--accent);
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.15s, background 0.15s;
+  white-space: nowrap;
+}
+.insight-dl-btn:hover { opacity: 1; background: rgba(14,165,233,0.22); }
 .kpi-card.danger-card { border-color: rgba(239,68,68,0.4); }
 .kpi-card.danger-card .kpi-value { color: var(--warning); }
 
@@ -1286,3 +1314,44 @@ body { font-family: 'Inter', 'Segoe UI', sans-serif; background: var(--bg-dark);
 }
 /* push main content up so footer doesn't overlap it */
 #main { padding-bottom: 42px; }
+
+/* ── Workables controls ── */
+.wb-date-input,
+.wb-week-select {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.wb-date-input:focus,
+.wb-week-select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* ── Workables view-mode pill toggle ── */
+.wb-mode-toggle { display: flex; gap: 0; }
+.wb-toggle-btn {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 4px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  line-height: 1.5;
+}
+.wb-toggle-btn:first-child { border-radius: 6px 0 0 6px; }
+.wb-toggle-btn:last-child  { border-radius: 0 6px 6px 0; border-left: none; }
+.wb-toggle-btn.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+.wb-toggle-btn:not(.active):hover {
+  background: var(--bg-hover, var(--border));
+  color: var(--text-primary);
+}

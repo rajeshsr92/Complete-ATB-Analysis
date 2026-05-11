@@ -1,6 +1,18 @@
 # Pickle caches under Data/ — generated at runtime, never commit
 Data/**/*.pkl
 
+# Client production & work queue files — live data, never commit xlsx
+Data/*/Production/*.xlsx
+
+# Legacy flat Production folder (kept for compat, not tracked)
+Data/Production/
+
+# Build artifacts
+ATB_Dashboard.spec
+ATB_Dashboard_Showcase.zip
+build/
+dist/
+
 # Compiled Python libraries (installed locally, not part of source)
 lib/
 

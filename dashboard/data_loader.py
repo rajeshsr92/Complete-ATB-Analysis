@@ -48,7 +48,8 @@ _WEEKLY_RE = re.compile(r'^(\d{2})_(\d{2})_(\d{4})$')
 _CACHE_DIR = os.path.join(os.path.expanduser('~'), 'AppData', 'Local', 'atb_eom_cache')
 
 # Limit concurrent raw Excel parses — each consumes ~400 MB RAM during parse
-_excel_semaphore = threading.Semaphore(4)
+# Set to 2 so openpyxl GIL usage doesn't starve HTTP handler threads
+_excel_semaphore = threading.Semaphore(2)
 
 NEEDED_COLS = [
     'Encounter Number', 'Primary Health Plan',
@@ -61,17 +62,19 @@ OPTIONAL_COLS = [
     'Billing Entity',
     'First Claim Number', 'Last Claim Number',
     'Last Denial Code and Reason', 'Last Denial Date', 'Last Denial Group',
+    'Claim Status',
+    'Claim Transmission Age Category',
 ]
 
 CAT_COLS = [
     'Primary Health Plan', 'Responsible Financial Class', 'Responsible Health Plan',
     'Discharge Aging Category', 'Unbilled Aging Category', 'Balance Group',
-    'Billing Entity',
+    'Billing Entity', 'Claim Status', 'Claim Transmission Age Category',
 ]
 
 DENIAL_CAT_COLS = ['Last Denial Code and Reason', 'Last Denial Group']
 
-PKL_VERSION = 'v10'
+PKL_VERSION = 'v12'
 
 
 def _data_root():
@@ -359,8 +362,85 @@ def get_billing_entities(weekly_data):
     return sorted(str(v) for v in entities if str(v) not in ('Unknown', 'nan', ''))
 
 
+def _production_dirs(client_name=None):
+    """Return candidate Production folder paths for a given client (most-specific first)."""
+    root = _data_root()
+    dirs = []
+    if client_name:
+        dirs.append(os.path.join(root, client_name, 'Production'))
+    dirs.append(os.path.join(root, 'Production'))   # legacy flat fallback
+    return dirs
+
+
+def load_production_file(client_name=None):
+    """Load the SNCA Production xlsx from Data/{client_name}/Production/.
+    Falls back to Data/Production/ for backward compat.
+    Returns a DataFrame or None.
+    """
+    for prod_dir in _production_dirs(client_name):
+        if not os.path.isdir(prod_dir):
+            continue
+        for fname in sorted(os.listdir(prod_dir)):
+            if (fname.lower().endswith('.xlsx')
+                    and not fname.startswith('~')
+                    and not fname.lower().startswith('work queue')):
+                path = os.path.join(prod_dir, fname)
+                try:
+                    df = pd.read_excel(path)
+                    df['Worked Date'] = pd.to_datetime(df['Worked Date'], errors='coerce')
+                    df['First Claim#'] = pd.to_numeric(df['First Claim#'], errors='coerce')
+                    df['Claim#'] = pd.to_numeric(df['Claim#'], errors='coerce')
+                    for col in ('Balance Amount', 'Billed Amount'):
+                        if col in df.columns:
+                            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+                    return df
+                except Exception:
+                    pass
+    return None
+
+
+# Workflow states to surface from the Work Queue Weekly file
+WQ_WORKFLOW_STATES = frozenset([
+    'R1 Credentialing',
+    'SNCA Coding Denials',
+    'SNCA Registration Edits',
+    'SNCA Authorizations',
+    'SNCA Adjustment Request',
+    'SNCA Registration Denials',
+    'SNCA Medical Necissity Edits Review',
+    'SNCA Coding Edits',
+])
+
+
+def load_work_queue_file(client_name=None):
+    """Load Work Queue Weekly xlsx from Data/{client_name}/Production/.
+    Falls back to Data/Production/ for backward compat.
+    Only keeps rows whose Work Flow State is in WQ_WORKFLOW_STATES.
+    Matching against ATB is via Encounter Number.
+    """
+    for prod_dir in _production_dirs(client_name):
+        if not os.path.isdir(prod_dir):
+            continue
+        for fname in sorted(os.listdir(prod_dir)):
+            if (fname.lower().startswith('work queue weekly')
+                    and fname.lower().endswith('.xlsx')
+                    and not fname.startswith('~')):
+                path = os.path.join(prod_dir, fname)
+                try:
+                    df = pd.read_excel(path)
+                    if 'Encounter Number' in df.columns:
+                        df['Encounter Number'] = pd.to_numeric(df['Encounter Number'], errors='coerce')
+                    if 'Work Flow State' in df.columns:
+                        df = df[df['Work Flow State'].isin(WQ_WORKFLOW_STATES)].copy()
+                    return df
+                except Exception:
+                    pass
+    return None
+
+
 def get_filter_values(weekly_data):
     fin_classes, health_plans, balance_types = set(), set(), set()
+    claim_statuses, dac_values, ctac_values = set(), set(), set()
     for df in weekly_data.values():
         if 'Responsible Financial Class' in df.columns:
             fin_classes.update(df['Responsible Financial Class'].dropna().unique())
@@ -368,8 +448,19 @@ def get_filter_values(weekly_data):
             health_plans.update(df['Responsible Health Plan'].dropna().unique())
         if 'Balance Type' in df.columns:
             balance_types.update(df['Balance Type'].dropna().unique())
+        if 'Claim Status' in df.columns:
+            claim_statuses.update(df['Claim Status'].dropna().unique())
+        if 'Discharge Aging Category' in df.columns:
+            dac_values.update(df['Discharge Aging Category'].dropna().unique())
+        if 'Claim Transmission Age Category' in df.columns:
+            ctac_values.update(df['Claim Transmission Age Category'].dropna().unique())
+
+    _clean = lambda s: sorted(str(v).strip() for v in s if str(v).strip() not in ('Unknown', 'nan', ''))
     return {
-        'resp_fin_class':  sorted(str(v) for v in fin_classes   if str(v) not in ('Unknown', 'nan', '')),
-        'resp_health_plan': sorted(str(v) for v in health_plans if str(v) not in ('Unknown', 'nan', '')),
-        'balance_type':    sorted(str(v).strip() for v in balance_types if str(v).strip() not in ('Unknown', 'nan', '')),
+        'resp_fin_class':   _clean(fin_classes),
+        'resp_health_plan': _clean(health_plans),
+        'balance_type':     _clean(balance_types),
+        'claim_status':     _clean(claim_statuses),
+        'dac':              _clean(dac_values),
+        'ctac':             _clean(ctac_values),
     }
